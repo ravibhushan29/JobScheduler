@@ -1,0 +1,108 @@
+# API: stateless, 3+ replicas spread across nodes and zones. Rolling updates
+# never drop below full capacity; the PDB keeps 2 up during node drains.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+  labels: { app.kubernetes.io/name: api }
+spec:
+  replicas: 3
+  revisionHistoryLimit: 5
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: { maxUnavailable: 0, maxSurge: 1 }
+  selector:
+    matchLabels: { app.kubernetes.io/name: api }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: api }
+    spec:
+      serviceAccountName: job-scheduler
+      automountServiceAccountToken: false
+      securityContext: &pod-security
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile: { type: RuntimeDefault }
+      topologySpreadConstraints: &spread
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector: { matchLabels: { app.kubernetes.io/name: api } }
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector: { matchLabels: { app.kubernetes.io/name: api } }
+      initContainers:
+        # Idempotent and lock-protected, so every pod may run it safely.
+        - name: migrate
+          image: job-scheduler
+          command: ["python", "-m", "app.migrate"]
+          envFrom: &env
+            - configMapRef: { name: job-scheduler-config }
+            - secretRef: { name: job-scheduler-secrets }
+          securityContext: &container-security
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          resources: { requests: { cpu: 50m, memory: 128Mi }, limits: { memory: 256Mi } }
+          volumeMounts: &tmp-mount [{ name: tmp, mountPath: /tmp }]
+      containers:
+        - name: api
+          image: job-scheduler
+          command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2", "--proxy-headers", "--forwarded-allow-ips=*"]
+          ports: [{ name: http, containerPort: 8000 }]
+          envFrom: *env
+          securityContext: *container-security
+          resources:
+            requests: { cpu: 250m, memory: 256Mi }
+            limits: { memory: 512Mi }
+          startupProbe:
+            httpGet: { path: /health, port: http }
+            periodSeconds: 2
+            failureThreshold: 30
+          livenessProbe: # process is up (no dependency checks: a DB blip must not restart every pod)
+            httpGet: { path: /health, port: http }
+            periodSeconds: 10
+            failureThreshold: 3
+          readinessProbe: # take the pod out of the Service when it can't reach the DB or broker
+            httpGet: { path: /health/ready, port: http }
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          lifecycle:
+            preStop: { sleep: { seconds: 5 } } # let the load balancer drop the pod before it stops
+          volumeMounts: *tmp-mount
+      terminationGracePeriodSeconds: 30
+      volumes: [{ name: tmp, emptyDir: {} }]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: api
+  labels: { app.kubernetes.io/name: api }
+spec:
+  selector: { app.kubernetes.io/name: api }
+  ports: [{ name: http, port: 80, targetPort: http }]
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: api
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels: { app.kubernetes.io/name: api }
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: api
+spec:
+  scaleTargetRef: { apiVersion: apps/v1, kind: Deployment, name: api }
+  minReplicas: 3
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource: { name: cpu, target: { type: Utilization, averageUtilization: 70 } }

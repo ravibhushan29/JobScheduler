@@ -1,0 +1,20 @@
+[project]
+name = "job-scheduler"
+version = "3.1.0"
+description = "FastAPI + Celery + Celery Beat + Redis job scheduler with SQLite-backed job history and runtime schedules."
+requires-python = ">=3.11"
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+extend-exclude = ["venv"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B"]
+# B008: FastAPI's Query()/Body()/Security() defaults are the documented idiom.
+ignore = ["B008"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-ra"

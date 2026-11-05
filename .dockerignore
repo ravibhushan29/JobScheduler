@@ -1,0 +1,16 @@
+# Keep the build context small and free of secrets/local state.
+venv/
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+data/
+logs/
+celerybeat-schedule*
+.env
+.env.*
+.git/
+.DS_Store
+.vscode/
+.idea/

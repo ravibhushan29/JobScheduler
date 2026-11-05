@@ -1,0 +1,148 @@
+# ---------------------------------------------------------------------------
+# Full stack with several replicas of every service, to run and verify
+# multi-pod behaviour on one machine:
+#   postgres, redis, migrate (one-shot), api x2, worker x2, worker_long x2,
+#   scheduler x2, flower
+#
+#   Production-like:  docker compose -f docker-compose.yml up -d --build
+#   Development:      docker compose up --build   (+ docker-compose.override.yml)
+#
+# Required in .env (copy .env.example): API_KEYS, REDIS_PASSWORD,
+# POSTGRES_PASSWORD, FLOWER_BASIC_AUTH.
+#
+# Scale anything except postgres/redis/flower freely, e.g.
+#   docker compose up -d --scale worker=4 --scale scheduler=3
+# Every job and every scheduled run still executes once.
+#
+# Postgres and Redis here are single containers — fine for dev/CI, NOT
+# highly available. In production use managed, replicated services (see
+# README "High availability") and run the app on Kubernetes (deploy/k8s).
+# ---------------------------------------------------------------------------
+
+x-app-env: &app-env
+  DATABASE_URL: postgresql://jobs:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/jobs
+  AUTO_MIGRATE: "false" # the migrate service runs migrations once, before everything else
+  REDIS_HOST: redis
+  REDIS_PORT: 6379
+  REDIS_PASSWORD: ${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env}
+  API_KEYS: ${API_KEYS:?Set API_KEYS (comma-separated) in .env}
+  LOG_LEVEL: ${LOG_LEVEL:-INFO}
+  LOG_FORMAT: ${LOG_FORMAT:-json}
+  LOG_TO_FILE: "false" # containers log to stdout
+  FIFO_ENABLED: ${FIFO_ENABLED:-true}
+  SCHEDULE_POLL_INTERVAL_SECONDS: ${SCHEDULE_POLL_INTERVAL_SECONDS:-5}
+  EXECUTION_LEASE_SECONDS: ${EXECUTION_LEASE_SECONDS:-60}
+  BROKER_VISIBILITY_TIMEOUT: ${BROKER_VISIBILITY_TIMEOUT:-300}
+  JOB_RETENTION_DAYS: ${JOB_RETENTION_DAYS:-30}
+
+x-app: &app
+  build: .
+  restart: unless-stopped
+  environment: *app-env
+  depends_on:
+    migrate:
+      condition: service_completed_successfully
+    redis:
+      condition: service_healthy
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: jobs
+      POSTGRES_USER: jobs
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U jobs -d jobs"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["sh", "-c", 'exec redis-server --appendonly yes --requirepass "$$REDIS_PASSWORD"']
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env}
+    volumes:
+      - redis-data:/data # AOF persistence: queued messages survive a Redis restart
+    healthcheck:
+      test: ["CMD-SHELL", 'REDISCLI_AUTH="$$REDIS_PASSWORD" redis-cli ping | grep -q PONG']
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # Creates/upgrades tables once, then exits. Everything else waits for it.
+  migrate:
+    build: .
+    command: python -m app.migrate
+    environment: *app-env
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  api:
+    <<: *app
+    command: >
+      uvicorn app.main:app --host 0.0.0.0 --port 8000
+      --workers ${API_WORKERS:-2} --proxy-headers --forwarded-allow-ips="*"
+    deploy:
+      replicas: ${API_REPLICAS:-2}
+    ports:
+      - "${API_PORT:-8000}-${API_PORT_MAX:-8001}:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health/ready', timeout=4)"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  worker:
+    <<: *app
+    command: celery -A app.celery_app worker -Q default --concurrency=${WORKER_CONCURRENCY:-4} --loglevel=info
+    deploy:
+      replicas: ${WORKER_REPLICAS:-2}
+    stop_grace_period: 60s # let running tasks finish on shutdown
+    healthcheck: &worker-healthcheck
+      test: ["CMD-SHELL", 'celery -A app.celery_app inspect ping -d "celery@$$HOSTNAME" --timeout 10']
+      interval: 60s
+      timeout: 20s
+      retries: 3
+      start_period: 30s
+
+  worker_long:
+    <<: *app
+    command: celery -A app.celery_app worker -Q long --concurrency=${WORKER_LONG_CONCURRENCY:-2} --loglevel=info
+    deploy:
+      replicas: ${WORKER_LONG_REPLICAS:-2}
+    stop_grace_period: ${LONG_TASK_GRACE_PERIOD:-150s}
+    healthcheck: *worker-healthcheck
+
+  # Active-active: every replica polls; the database lets exactly one fire each due run.
+  scheduler:
+    <<: *app
+    command: python -m app.scheduler
+    deploy:
+      replicas: ${SCHEDULER_REPLICAS:-2}
+    healthcheck:
+      test: ["CMD", "python", "-m", "app.scheduler", "healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  flower:
+    <<: *app
+    command: >
+      celery -A app.celery_app flower --port=5555
+      --basic_auth=${FLOWER_BASIC_AUTH:?Set FLOWER_BASIC_AUTH=user:password in .env}
+    ports:
+      - "127.0.0.1:${FLOWER_PORT:-5555}:5555"
+
+volumes:
+  postgres-data:
+  redis-data:

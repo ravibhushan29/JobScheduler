@@ -1,0 +1,78 @@
+# Scheduler: fires due schedules, relays the outbox, resumes jobs whose worker
+# died. Active-active — every replica works, the database makes sure each due
+# run fires exactly once — so run 2+ replicas across nodes/zones for HA. There
+# is no leader election and no failover delay.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: scheduler
+  labels: { app.kubernetes.io/name: scheduler }
+spec:
+  replicas: 2
+  revisionHistoryLimit: 5
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: { maxUnavailable: 0, maxSurge: 1 }
+  selector:
+    matchLabels: { app.kubernetes.io/name: scheduler }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: scheduler }
+    spec:
+      serviceAccountName: job-scheduler
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile: { type: RuntimeDefault }
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector: { matchLabels: { app.kubernetes.io/name: scheduler } }
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector: { matchLabels: { app.kubernetes.io/name: scheduler } }
+      initContainers:
+        - name: migrate
+          image: job-scheduler
+          command: ["python", "-m", "app.migrate"]
+          envFrom: &env
+            - configMapRef: { name: job-scheduler-config }
+            - secretRef: { name: job-scheduler-secrets }
+          securityContext: &container-security
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          resources: { requests: { cpu: 50m, memory: 128Mi }, limits: { memory: 256Mi } }
+          volumeMounts: &tmp-mount [{ name: tmp, mountPath: /tmp }]
+      containers:
+        - name: scheduler
+          image: job-scheduler
+          command: ["python", "-m", "app.scheduler"]
+          envFrom: *env
+          securityContext: *container-security
+          resources:
+            requests: { cpu: 100m, memory: 192Mi }
+            limits: { memory: 384Mi }
+          livenessProbe: # the loop touches /tmp/scheduler-heartbeat every poll
+            exec: { command: ["python", "-m", "app.scheduler", "healthcheck"] }
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 3
+          volumeMounts: *tmp-mount
+      terminationGracePeriodSeconds: 30
+      volumes: [{ name: tmp, emptyDir: {} }]
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: scheduler
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels: { app.kubernetes.io/name: scheduler }

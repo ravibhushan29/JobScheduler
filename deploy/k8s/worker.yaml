@@ -1,0 +1,97 @@
+# Workers for the `default` queue. Any number of replicas: the execution
+# guard guarantees each job runs once. On shutdown (rollout, scale-in, node
+# drain) a worker stops taking jobs and finishes the running ones within the
+# grace period; anything still running after that is resumed elsewhere.
+#
+# For autoscaling on queue length rather than CPU, replace the HPA with a
+# KEDA ScaledObject using the `redis` list-length trigger on the `default` list.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worker
+  labels: { app.kubernetes.io/name: worker }
+spec:
+  replicas: 3
+  revisionHistoryLimit: 5
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: { maxUnavailable: 1, maxSurge: 1 }
+  selector:
+    matchLabels: { app.kubernetes.io/name: worker }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: worker }
+    spec:
+      serviceAccountName: job-scheduler
+      automountServiceAccountToken: false
+      securityContext: &pod-security
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile: { type: RuntimeDefault }
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector: { matchLabels: { app.kubernetes.io/name: worker } }
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector: { matchLabels: { app.kubernetes.io/name: worker } }
+      initContainers:
+        - name: migrate
+          image: job-scheduler
+          command: ["python", "-m", "app.migrate"]
+          envFrom: &env
+            - configMapRef: { name: job-scheduler-config }
+            - secretRef: { name: job-scheduler-secrets }
+          securityContext: &container-security
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          resources: { requests: { cpu: 50m, memory: 128Mi }, limits: { memory: 256Mi } }
+          volumeMounts: &tmp-mount [{ name: tmp, mountPath: /tmp }]
+      containers:
+        - name: worker
+          image: job-scheduler
+          command: ["celery", "-A", "app.celery_app", "worker", "-Q", "default", "--concurrency=4", "--loglevel=info"]
+          envFrom: *env
+          securityContext: *container-security
+          resources:
+            requests: { cpu: 500m, memory: 512Mi }
+            limits: { memory: 1Gi }
+          livenessProbe:
+            exec:
+              command: ["sh", "-c", 'celery -A app.celery_app inspect ping -d "celery@$HOSTNAME" --timeout 10']
+            initialDelaySeconds: 30
+            periodSeconds: 60
+            timeoutSeconds: 20
+            failureThreshold: 3
+          volumeMounts: *tmp-mount
+      # > TASK_SOFT_TIME_LIMIT, so a warm shutdown can finish running tasks.
+      terminationGracePeriodSeconds: 330
+      volumes: [{ name: tmp, emptyDir: {} }]
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: worker
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels: { app.kubernetes.io/name: worker }
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: worker
+spec:
+  scaleTargetRef: { apiVersion: apps/v1, kind: Deployment, name: worker }
+  minReplicas: 3
+  maxReplicas: 20
+  metrics:
+    - type: Resource
+      resource: { name: cpu, target: { type: Utilization, averageUtilization: 70 } }
+  behavior:
+    scaleDown: { stabilizationWindowSeconds: 300 } # avoid churn: scale-in waits for running tasks

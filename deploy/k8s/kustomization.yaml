@@ -1,0 +1,27 @@
+# Kubernetes deployment for the job scheduler.
+#
+#   kubectl apply -k deploy/k8s            # after creating the Secret (see secret.example.yaml)
+#
+# Postgres and Redis are NOT deployed here: use managed, highly available
+# services (e.g. RDS/Cloud SQL with a standby, ElastiCache/Memorystore with a
+# replica and automatic failover) and point the Secret at them.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: job-scheduler
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: job-scheduler
+    includeSelectors: false
+resources:
+  - namespace.yaml
+  - serviceaccount.yaml
+  - configmap.yaml
+  - api.yaml
+  - worker.yaml
+  - worker-long.yaml
+  - scheduler.yaml
+  - flower.yaml
+  - networkpolicy.yaml
+images:
+  - name: job-scheduler # replace with your registry, e.g. ghcr.io/acme/job-scheduler
+    newTag: "4.0.0"

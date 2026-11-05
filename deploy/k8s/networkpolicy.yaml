@@ -1,0 +1,22 @@
+# Only the API accepts traffic from outside the namespace. Workers, scheduler
+# and Flower accept none from other namespaces (Flower is reached via
+# port-forward). Egress is left open for the managed Postgres/Redis endpoints;
+# tighten it to their CIDRs if your CNI enforces egress policy.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+spec:
+  podSelector: {}
+  policyTypes: [Ingress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-api-ingress
+spec:
+  podSelector:
+    matchLabels: { app.kubernetes.io/name: api }
+  policyTypes: [Ingress]
+  ingress:
+    - ports: [{ port: 8000, protocol: TCP }]

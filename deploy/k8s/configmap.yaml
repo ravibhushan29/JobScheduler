@@ -1,0 +1,23 @@
+# Non-secret settings, shared by every pod. Full list: .env.example / app/config.py.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: job-scheduler-config
+data:
+  AUTO_MIGRATE: "false"              # the migrate init container does it
+  LOG_FORMAT: json
+  LOG_LEVEL: INFO
+  LOG_TO_FILE: "false"
+  FIFO_ENABLED: "true"
+  DEFAULT_QUEUE_NAME: default
+  LONG_TASK_QUEUE_NAME: long
+  SCHEDULE_POLL_INTERVAL_SECONDS: "5"
+  EXECUTION_LEASE_SECONDS: "60"
+  MAX_WORKER_LOSS_RECOVERIES: "3"
+  BROKER_VISIBILITY_TIMEOUT: "300"
+  OUTBOX_REPUBLISH_AFTER_SECONDS: "30"
+  JOB_RETENTION_DAYS: "30"
+  TASK_SOFT_TIME_LIMIT: "300"
+  TASK_TIME_LIMIT: "360"
+  DB_POOL_SIZE: "5"
+  DB_MAX_OVERFLOW: "5"

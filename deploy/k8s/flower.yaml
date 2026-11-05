@@ -1,0 +1,52 @@
+# Flower dashboard. One replica is enough (it holds no state); ClusterIP only —
+# reach it with `kubectl -n job-scheduler port-forward svc/flower 5555` or an
+# authenticated ingress.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: flower
+  labels: { app.kubernetes.io/name: flower }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app.kubernetes.io/name: flower }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: flower }
+    spec:
+      serviceAccountName: job-scheduler
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: flower
+          image: job-scheduler
+          command: ["sh", "-c", 'exec celery -A app.celery_app flower --port=5555 --basic_auth="$FLOWER_BASIC_AUTH"']
+          ports: [{ name: http, containerPort: 5555 }]
+          envFrom:
+            - configMapRef: { name: job-scheduler-config }
+            - secretRef: { name: job-scheduler-secrets }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { memory: 256Mi }
+          readinessProbe:
+            tcpSocket: { port: http }
+            periodSeconds: 10
+          volumeMounts: [{ name: tmp, mountPath: /tmp }]
+      volumes: [{ name: tmp, emptyDir: {} }]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: flower
+  labels: { app.kubernetes.io/name: flower }
+spec:
+  selector: { app.kubernetes.io/name: flower }
+  ports: [{ name: http, port: 5555, targetPort: http }]

@@ -1,0 +1,33 @@
+# Pinned to the latest stable PyPI releases as of 2026-07-25.
+# Re-check before bumping in production: `pip install --upgrade -r requirements.txt --dry-run`
+# or `pip list --outdated`, and read each project's changelog for breaking changes
+# (celery in particular ships major/minor releases with config changes).
+
+fastapi==0.140.0
+uvicorn[standard]==0.51.0
+celery==5.6.3
+# NOTE: redis-py ships major versions faster than Celery's Redis transport
+# is tested against. If the worker fails to connect to Redis after
+# installing, the safest fallback is a same-major, slightly older redis-py
+# (e.g. redis==5.0.8) rather than downgrading Celery.
+redis==8.0.1
+# kombu's Redis transport imports `packaging` but doesn't declare it as a
+# dependency. Without this pin a clean image fails at worker start with
+# "No module named 'packaging'" (a dev venv usually has it by accident).
+packaging==26.2
+pydantic[email]==2.13.4
+
+# Database access (app/db.py and Celery's result backend), via SQLAlchemy Core.
+# The asyncio extra pulls in greenlet, which SQLAlchemy's async engine needs.
+SQLAlchemy[asyncio]==2.0.42
+greenlet==3.5.6
+# Postgres driver (sync + async) — required for multi-pod deployments.
+psycopg[binary]==3.3.8
+# SQLite async driver — single-machine dev and tests.
+aiosqlite==0.22.1
+
+# Cron expression parsing for schedule_type="cron"
+croniter==6.2.2
+
+# Monitoring dashboard for Celery — https://github.com/mher/flower
+flower==2.0.1
