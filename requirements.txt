@@ -10,7 +10,7 @@ celery==5.6.3
 # is tested against. If the worker fails to connect to Redis after
 # installing, the safest fallback is a same-major, slightly older redis-py
 # (e.g. redis==5.0.8) rather than downgrading Celery.
-redis==8.0.1
+redis==8.1.0
 # kombu's Redis transport imports `packaging` but doesn't declare it as a
 # dependency. Without this pin a clean image fails at worker start with
 # "No module named 'packaging'" (a dev venv usually has it by accident).
