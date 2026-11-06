@@ -1,7 +1,7 @@
 [project]
 name = "job-scheduler"
-version = "3.1.0"
-description = "FastAPI + Celery + Celery Beat + Redis job scheduler with SQLite-backed job history and runtime schedules."
+version = "4.0.0"
+description = "Highly available FastAPI + Celery + Redis + Postgres job scheduler where every job and scheduled run executes exactly once."
 requires-python = ">=3.11"
 license = "MIT"
 license-files = ["LICENSE"]
