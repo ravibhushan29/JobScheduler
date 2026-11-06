@@ -1,0 +1,17 @@
+apiVersion: v2
+name: job-scheduler
+description: >-
+  Distributed job scheduler (FastAPI + Celery + Redis + Postgres): API, workers,
+  scheduler and Flower, hardened for the restricted Pod Security Standard.
+type: application
+version: 0.1.0
+appVersion: "5.0.0"
+# preStop `sleep` (api) needs Kubernetes 1.30+.
+kubeVersion: ">=1.30.0-0"
+keywords:
+  - scheduler
+  - celery
+  - fastapi
+  - jobs
+sources:
+  - https://github.com/ravibhushan29/JobScheduler

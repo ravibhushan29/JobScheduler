@@ -9,7 +9,7 @@ There are two supported ways:
 | Where | One machine | A cluster of machines |
 | Good for | Development, CI, demos, small internal use | Production, high availability |
 | Postgres & Redis | Included (single containers, **not** highly available) | Bring your own managed, highly available services |
-| Files | `docker-compose.yml`, `docker-compose.override.yml` | `deploy/k8s/` |
+| Files | `docker-compose.yml`, `docker-compose.override.yml` | `deploy/k8s/` (kustomize) or `deploy/helm/` |
 
 ---
 
@@ -175,6 +175,23 @@ changing.
 | Autoscaling | CPU-based HPAs | More pods when busy. (For queue-length scaling, use KEDA's Redis trigger.) |
 | Hardening | non-root, read-only filesystem, no capabilities, no service-account token, network policies | Small attack surface. |
 
+### Helm
+
+Prefer Helm? The chart in `deploy/helm/job-scheduler/` deploys the same
+pods, probes, budgets and security settings as `deploy/k8s/`. Use one or the
+other, not both.
+
+```bash
+helm install job-scheduler deploy/helm/job-scheduler \
+  --namespace job-scheduler \
+  --set image.repository=registry.example.com/job-scheduler \
+  --set secrets.existingSecret=job-scheduler-secrets
+```
+
+It can also create the Ingress, the Secret and Prometheus monitoring for you.
+Settings, upgrades and examples are in the
+[chart README](../deploy/helm/job-scheduler/README.md).
+
 ---
 
 ## 9.3 High availability: the full picture
@@ -215,12 +232,68 @@ What happens when something fails is covered in [chapter 7](07-reliability.md#72
 
 ---
 
-## 9.4 Production checklist
+## 9.4 Supply-chain security
+
+GitHub Actions checks what goes into the image, and signs what comes out.
+
+### Scans
+The `Security` workflow (`.github/workflows/security.yml`) runs on every push
+to `main`, on every pull request, and once a week. The weekly run catches new
+CVEs even when nobody pushes.
+
+| Check | Tool | Fails the build when |
+|---|---|---|
+| Python dependencies | `pip-audit` on `requirements.txt` | Any pinned package has a known vulnerability. |
+| Container image | Trivy | The image has a CRITICAL or HIGH vulnerability that has a fix. |
+| Bill of materials | Syft (`anchore/sbom-action`) | Never. It only produces the SBOM. |
+
+Each run uploads an **SBOM** (SPDX JSON) of the image. Find it under
+*Artifacts* on the workflow run page, as `job-scheduler-sbom.spdx.json`.
+
+Dependabot opens weekly pull requests for Python packages, GitHub Actions and
+the Docker base image.
+
+### Releases
+Pushing a tag like `v4.0.1` runs the `Release` workflow
+(`.github/workflows/release.yml`). It:
+
+1. Builds the image for `linux/amd64` and `linux/arm64`.
+2. Pushes it to `ghcr.io/ravibhushan29/jobscheduler`, tagged `4.0.1`, `4.0`
+   and `sha-<commit>`.
+3. Attaches an SBOM and build provenance to the image in the registry.
+4. Signs the image with **cosign, keyless**. There is no signing key to leak.
+   GitHub proves the identity of the workflow, and the signature is recorded
+   in the public Sigstore log.
+5. Creates a GitHub Release with auto-generated notes.
+
+### Verify an image before you deploy it
+Install [cosign](https://docs.sigstore.dev/cosign/system_config/installation/), then run:
+
+```bash
+cosign verify ghcr.io/ravibhushan29/jobscheduler:4.0.1 \
+  --certificate-identity-regexp '^https://github\.com/ravibhushan29/JobScheduler/\.github/workflows/release\.yml@refs/tags/v' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+```
+
+It succeeds only if the image was signed by this repository's release workflow,
+from a version tag. If it fails, don't deploy that image.
+
+To see the SBOM and provenance stored with an image:
+
+```bash
+docker buildx imagetools inspect ghcr.io/ravibhushan29/jobscheduler:4.0.1 --format '{{ json .SBOM }}'
+docker buildx imagetools inspect ghcr.io/ravibhushan29/jobscheduler:4.0.1 --format '{{ json .Provenance }}'
+```
+
+---
+
+## 9.5 Production checklist
 
 **Security**
 - [ ] Long random `API_KEYS` (two, so you can rotate), stored in a secret manager.
 - [ ] TLS on the public endpoint; TLS to Postgres (`sslmode=require`) and Redis (`rediss://`).
 - [ ] Flower reachable only via `port-forward` or an authenticated ingress.
+- [ ] Image signature checked with `cosign verify` (see [9.4](#94-supply-chain-security)).
 
 **Availability**
 - [ ] Managed, highly available Postgres and Redis.

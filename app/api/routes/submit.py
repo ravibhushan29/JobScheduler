@@ -9,7 +9,7 @@ retry timeouts safely.
 
 from typing import Optional
 
-from fastapi import APIRouter, Header, Response
+from fastapi import APIRouter, Depends, Header, Request, Response
 
 from app import tasks
 from app.api.enqueue import Submission, submit_task
@@ -23,8 +23,10 @@ from app.api.schemas import (
     NotificationRequest,
     TaskSubmitResponse,
 )
+from app.api.security import Principal, audit, check_task_allowed, require, scoped_key
 
-router = APIRouter(prefix="/tasks", tags=["Tasks"], responses=error_responses(401, 409, 422, 503))
+router = APIRouter(prefix="/tasks", tags=["Tasks"], responses=error_responses(401, 403, 409, 422, 429, 503))
+_writer = Depends(require("jobs:write"))
 
 IdempotencyKey = Header(
     default=None,
@@ -39,49 +41,78 @@ def to_response(submission: Submission, response: Response) -> TaskSubmitRespons
     if not submission.created:
         response.status_code = 200
         response.headers["Idempotent-Replayed"] = "true"
-    return TaskSubmitResponse(task_id=submission.task_id)
+    return TaskSubmitResponse(task_id=submission.task_id, run_after=submission.run_after)
+
+
+async def _submit(
+    request: Request, principal: Principal, task, args: list, idempotency_key: Optional[str]
+) -> Submission:
+    """Submit a sample task on behalf of `principal`: permission check, tenant, audit."""
+    check_task_allowed(principal, task.name)
+    submission = await submit_task(
+        task, args, idempotency_key=scoped_key(principal, idempotency_key), tenant=principal.tenant
+    )
+    if submission.created:
+        await audit(request, principal, "job.submit", "job", submission.task_id, {"task_name": task.name})
+    return submission
 
 
 @router.post("/add", response_model=TaskSubmitResponse, status_code=201, summary="Queue add(x, y)")
 async def submit_add(
-    payload: AddRequest, response: Response, idempotency_key: Optional[str] = IdempotencyKey
+    payload: AddRequest,
+    request: Request,
+    response: Response,
+    idempotency_key: Optional[str] = IdempotencyKey,
+    principal: Principal = _writer,
 ) -> TaskSubmitResponse:
     """The simplest task — a quick check that API, broker and worker all work together."""
-    submission = await submit_task(tasks.add, [payload.x, payload.y], idempotency_key=idempotency_key)
+    submission = await _submit(request, principal, tasks.add, [payload.x, payload.y], idempotency_key)
     return to_response(submission, response)
 
 
 @router.post("/long", response_model=TaskSubmitResponse, status_code=201, summary="Queue a slow job")
 async def submit_long(
-    payload: LongTaskRequest, response: Response, idempotency_key: Optional[str] = IdempotencyKey
+    payload: LongTaskRequest,
+    request: Request,
+    response: Response,
+    idempotency_key: Optional[str] = IdempotencyKey,
+    principal: Principal = _writer,
 ) -> TaskSubmitResponse:
     """Runs on the separate `long` queue and reports PROGRESS (see `/jobs/{task_id}/status`)."""
-    submission = await submit_task(tasks.long_running_task, [payload.duration_seconds], idempotency_key=idempotency_key)
+    submission = await _submit(request, principal, tasks.long_running_task, [payload.duration_seconds], idempotency_key)
     return to_response(submission, response)
 
 
 @router.post("/flaky", response_model=TaskSubmitResponse, status_code=201, summary="Queue a randomly failing job")
 async def submit_flaky(
-    payload: FlakyTaskRequest, response: Response, idempotency_key: Optional[str] = IdempotencyKey
+    payload: FlakyTaskRequest,
+    request: Request,
+    response: Response,
+    idempotency_key: Optional[str] = IdempotencyKey,
+    principal: Principal = _writer,
 ) -> TaskSubmitResponse:
     """Fails with `fail_probability` and is retried automatically with exponential backoff."""
-    submission = await submit_task(tasks.flaky_task, [payload.fail_probability], idempotency_key=idempotency_key)
+    submission = await _submit(request, principal, tasks.flaky_task, [payload.fail_probability], idempotency_key)
     return to_response(submission, response)
 
 
 @router.post("/notify", response_model=TaskSubmitResponse, status_code=201, summary="Queue a simulated notification")
 async def submit_notification(
-    payload: NotificationRequest, response: Response, idempotency_key: Optional[str] = IdempotencyKey
+    payload: NotificationRequest,
+    request: Request,
+    response: Response,
+    idempotency_key: Optional[str] = IdempotencyKey,
+    principal: Principal = _writer,
 ) -> TaskSubmitResponse:
     """Simulated provider call that fails 30% of the time and retries itself via `self.retry()`."""
-    submission = await submit_task(
-        tasks.send_notification, [payload.email, payload.message], idempotency_key=idempotency_key
+    submission = await _submit(
+        request, principal, tasks.send_notification, [payload.email, payload.message], idempotency_key
     )
     return to_response(submission, response)
 
 
 @router.post("/test-batch", response_model=BatchTestResponse, status_code=201, summary="Queue one of every sample task")
-async def submit_test_batch() -> BatchTestResponse:
+async def submit_test_batch(request: Request, principal: Principal = _writer) -> BatchTestResponse:
     """
     Smoke test: queues every sample task, including one `flaky_task` that
     always fails, so `GET /jobs?status=FAILURE` and `POST /jobs/{id}/retry`
@@ -90,7 +121,7 @@ async def submit_test_batch() -> BatchTestResponse:
     """
 
     async def queue(task, args) -> str:
-        return (await submit_task(task, args)).task_id
+        return (await _submit(request, principal, task, args, None)).task_id
 
     return BatchTestResponse(
         add=await queue(tasks.add, [2, 2]),

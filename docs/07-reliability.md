@@ -194,7 +194,7 @@ sequenceDiagram
 ```
 
 ### Cancelling
-`DELETE /jobs/{id}` sets the status to REVOKED in the database. Since REVOKED
+`DELETE /v1/jobs/{id}` sets the status to REVOKED in the database. Since REVOKED
 jobs can't be claimed, **every** worker refuses to start them — even one that
 never received Celery's "revoke" broadcast. (The broadcast is still sent, to
 stop the job if it's already running.)

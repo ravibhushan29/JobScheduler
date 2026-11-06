@@ -21,16 +21,24 @@ JobScheduler/
 │   ├── scheduling.py           once / interval / cron timing maths
 │   ├── migrate.py              python -m app.migrate
 │   ├── logging_config.py       text/JSON logging to stdout (+ optional files)
-│   ├── main.py                 builds the FastAPI app
+│   ├── webhooks.py             signed webhook delivery with retries (run by the scheduler)
+│   ├── metrics.py              GET /metrics: cluster-wide metrics from the database
+│   ├── ratelimit.py            per-key rate limits, counted in Redis
+│   ├── tracing.py              optional OpenTelemetry setup
+│   ├── static/admin.html       the operator console (/ui)
+│   ├── main.py                 builds the FastAPI app (/v1 routers + legacy aliases)
 │   └── api/
 │       ├── errors.py           the error envelope + exception handlers
-│       ├── security.py         X-API-Key check
+│       ├── security.py         API keys, scopes, tenants, rate limits, audit
 │       ├── schemas.py          request/response models (validation lives here)
 │       ├── enqueue.py          submit_task(): save → publish, idempotency
-│       └── routes/             health.py, submit.py (/tasks), jobs.py, schedules.py
+│       └── routes/             health.py, submit.py (/v1/tasks), jobs.py, schedules.py, workflows.py, admin.py
 ├── tests/                      pytest suite (runs on SQLite and Postgres)
-├── scripts/                    smoke_test.py, chaos_test.py
-├── deploy/k8s/                 Kubernetes manifests
+├── scripts/                    smoke_test.py, chaos_test.py, load_test.py, backup_restore_drill.sh, export_openapi.py
+├── sdk/                        python/ and typescript/ clients, openapi.json (the API contract)
+├── deploy/k8s/                 Kubernetes manifests (kustomize)
+├── deploy/helm/                Helm chart
+├── deploy/monitoring/          Prometheus config, alert rules, Grafana dashboard
 ├── docs/                       this documentation
 ├── Dockerfile, docker-compose.yml, docker-compose.override.yml
 ├── requirements.txt, requirements-dev.txt, pyproject.toml
@@ -106,6 +114,10 @@ sequenceDiagram
 | `update_job_status(..., attempt=n)` | Updates a job; with `attempt`, only if it's still that attempt. |
 | `claim_abandoned_jobs()` | Finds STARTED jobs with expired leases, claims them for recovery. |
 | `fire_schedule()` | **Version-checked claim** of a due run + job insert, in one transaction. |
+| `update_job_status()` on a final state | Writes it **once**, and in the same transaction queues the webhook and advances the workflow (`_on_job_finished`). |
+| `create_workflow()` / `_advance_workflow()` | Workflow steps; releases fan-in steps exactly once by locking the workflow row. |
+| `claim_due_webhooks()` / `record_webhook_attempt()` | Webhook outbox, claimed with a version check. |
+| `metrics_snapshot()` | Everything `/metrics` reports, in one connection. |
 | `upsert_system_schedule()` | Creates/updates a code-defined schedule by name. |
 | `update_schedule()` | Changes allowed columns only, bumps `version`. |
 | `run_sync(coro)` | Runs an async DB call from sync code (Celery) on a per-process background loop. |
@@ -196,6 +208,12 @@ docker rm -f test-pg
 | `test_db_and_scheduling.py` | Database functions, migrations, timing rules, scheduler resilience |
 | `test_integration.py` | Real worker, every sample task end to end |
 | `test_no_double_execution.py` | Every way a job could run twice — and proof it doesn't |
+| `test_premium.py` | 5.0: /v1, job options, webhooks, workflows, keys/tenants/rate limits/audit, failures view, time zones, metrics, events, console |
+| `test_sdk.py` | The Python SDK against the real app and a real worker |
+
+The TypeScript SDK has its own tests: `cd sdk/typescript && npm test`.
+After changing any endpoint, run `python scripts/export_openapi.py` and
+`npm run generate` in `sdk/typescript`: CI fails if `sdk/openapi.json` is stale.
 
 ## 11.7 Conventions
 

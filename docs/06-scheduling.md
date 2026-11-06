@@ -42,19 +42,19 @@ gantt
 
 **Every 2 hours**
 ```bash
-curl -X POST $API/schedules -H "X-API-Key: $KEY" -H "Content-Type: application/json" \
+curl -X POST $API/v1/schedules -H "X-API-Key: $KEY" -H "Content-Type: application/json" \
   -d '{"task_name": "app.tasks.heartbeat", "schedule_type": "interval", "interval_seconds": 7200}'
 ```
 
 **Weekdays at 08:00 UTC**
 ```bash
-curl -X POST $API/schedules -H "X-API-Key: $KEY" -H "Content-Type: application/json" \
+curl -X POST $API/v1/schedules -H "X-API-Key: $KEY" -H "Content-Type: application/json" \
   -d '{"task_name": "app.tasks.scheduled_cleanup", "schedule_type": "cron", "cron_expr": "0 8 * * 1-5"}'
 ```
 
 **Once, at a specific time, with inputs**
 ```bash
-curl -X POST $API/schedules -H "X-API-Key: $KEY" -H "Content-Type: application/json" -d '{
+curl -X POST $API/v1/schedules -H "X-API-Key: $KEY" -H "Content-Type: application/json" -d '{
   "task_name": "app.tasks.send_notification",
   "args": ["ana@example.com", "Reminder: standup in 10 minutes"],
   "schedule_type": "once",
@@ -134,8 +134,11 @@ More examples:
 | `0 9 * * 1` | 09:00 every Monday |
 | `30 6 * * 1-5` | 06:30 on weekdays |
 
-> ⚠️ **Cron uses UTC.** If you want 09:00 in New York (UTC−5 in winter), write
-> `0 14 * * *` — and remember daylight saving time shifts it by an hour.
+> ⚠️ **Cron uses UTC by default.** If you want 09:00 in New York, either
+> add `"timezone": "America/New_York"` (5.0+): then `0 9 * * *` means 09:00
+> New York time all year, daylight saving included; or write the UTC time
+> yourself (`0 14 * * *` in winter, which then drifts by an hour in summer).
+> See [16.5 Cron schedules in your time zone](16-webhooks-and-workflows.md#165-cron-schedules-in-your-time-zone).
 
 ---
 
@@ -143,7 +146,7 @@ More examples:
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Active: POST /schedules
+    [*] --> Active: POST /v1/schedules
     Active --> Paused: PATCH enabled = false
     Paused --> Active: PATCH enabled = true
     Active --> Active: fires (interval/cron)<br/>run_count +1
@@ -159,11 +162,11 @@ stateDiagram-v2
 
 | Action | Request | Effect |
 |---|---|---|
-| Pause | `PATCH /schedules/{id}` `{"enabled": false}` | Stops firing; keeps its history. |
+| Pause | `PATCH /v1/schedules/{id}` `{"enabled": false}` | Stops firing; keeps its history. |
 | Resume | `{"enabled": true}` | Starts again. If its next time has already passed, it fires on the next check (once — missed runs aren't replayed). |
 | Change interval | `{"interval_seconds": 120}` | Next run = last run + 120 s (or now + 120 s if it never ran). Takes effect immediately. |
 | Change cron | `{"cron_expr": "*/5 * * * *"}` | Next run = next match from now. |
-| Delete | `DELETE /schedules/{id}` | Gone. Jobs it already created stay in `/jobs`. |
+| Delete | `DELETE /v1/schedules/{id}` | Gone. Jobs it already created stay in `/v1/jobs`. |
 
 Refused changes: a field that doesn't fit the type (`cron_expr` on an
 interval schedule) → **400**; `null` values or invalid cron → **422**;
@@ -176,7 +179,7 @@ resuming a `once` schedule that already fired, or touching a system schedule
 
 Two schedules are built in. They are defined in the code
 (`SYSTEM_SCHEDULES` in `app/tasks.py`), created automatically when a scheduler
-starts, shown in `GET /schedules` with `"system": true`, and **read-only**
+starts, shown in `GET /v1/schedules` with `"system": true`, and **read-only**
 through the API:
 
 | Name | Task | When | Why |

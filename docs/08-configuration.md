@@ -128,6 +128,41 @@ Explained in [chapter 7](07-reliability.md).
 
 ---
 
+## 8.8a Keys, tenants and rate limits (5.0)
+
+| Setting | Default | What it does | Change it when… |
+|---|---|---|---|
+| `API_KEY_CACHE_SECONDS` | `10` | How long each API replica caches a managed key. A revoked key stops working within this time on other replicas. | You need faster revocation (costs a DB read per request at 0). |
+| `DEFAULT_RATE_LIMIT_PER_MINUTE` | `0` | Requests per minute for keys without their own limit. `0` = unlimited. Counted in Redis, across replicas. | You want a safety net for every key. |
+| `TENANT_MAX_ACTIVE_SCHEDULES` | `0` | Most enabled schedules per tenant. `0` = unlimited. | Tenants are customers you don't fully trust. |
+| `AUDIT_RETENTION_DAYS` | `365` | Audit entries older than this are deleted nightly. | Your compliance rules say otherwise. |
+
+See [chapter 15](15-security-and-tenancy.md).
+
+## 8.8b Webhooks (5.0)
+
+| Setting | Default | What it does | Change it when… |
+|---|---|---|---|
+| `WEBHOOK_SIGNING_SECRET` | empty | Key for the `X-JobScheduler-Signature` HMAC. Empty = webhooks are unsigned. | **Always set it in production** (`openssl rand -hex 32`); give it to receivers. |
+| `WEBHOOK_ALLOWED_HOSTS` | empty (any) | Hosts `callback_url` may use, e.g. `*.example.com,hooks.partner.io`. | **Set it in production**, so callbacks can't target internal addresses. |
+| `WEBHOOK_TIMEOUT_SECONDS` | `10` | Timeout per delivery attempt. | Receivers are slow (better: make them answer fast). |
+| `WEBHOOK_MAX_ATTEMPTS` | `8` | Attempts before a delivery is `FAILED` (backoff 10 s doubling to 1 h ≈ a day). | You want to give up sooner or later. |
+| `WEBHOOK_POLL_INTERVAL_SECONDS` | `2` | How often schedulers look for due deliveries. | Rarely. |
+
+See [chapter 16](16-webhooks-and-workflows.md#162-webhooks).
+
+## 8.8c Observability (5.0)
+
+| Setting | Default | What it does | Change it when… |
+|---|---|---|---|
+| `METRICS_ENABLED` | `true` | Serve `GET /metrics`. | You don't use Prometheus. |
+| `METRICS_CACHE_SECONDS` | `10` | How long cluster metrics are cached per API replica. | Scrapes are very frequent and the DB is busy. |
+| `METRICS_WINDOW_SECONDS` | `300` | Window for "recent" metrics (finished, wait, duration). | You want a shorter or longer view. |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | empty | OTLP/HTTP endpoint, e.g. `http://otel-collector:4318`. Setting it turns tracing on. | You have a tracing backend. |
+| `TRACING_ENABLED` | on if the endpoint is set | Force tracing on or off. | Rarely. |
+
+Standard `OTEL_*` variables (sampler, resource attributes) also apply. See [chapter 17](17-observability.md).
+
 ## 8.9 Docker Compose only
 
 | Variable | Default | Meaning |

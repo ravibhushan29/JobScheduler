@@ -1,0 +1,45 @@
+# Used by `helm lint` / `helm template` checks: turns on the optional parts.
+image:
+  repository: ghcr.io/acme/job-scheduler
+  tag: "5.0.0"
+imagePullSecrets:
+  - name: regcred
+secrets:
+  existingSecret: job-scheduler-secrets
+config:
+  REDIS_SENTINEL_MASTER: mymaster
+  DB_POOL_SIZE: 10
+extraEnv:
+  - name: OTEL_SERVICE_NAME
+    value: job-scheduler
+ingress:
+  enabled: true
+  className: nginx
+  host: jobs.example.com
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt
+  tls:
+    enabled: true
+    secretName: jobs-example-com-tls
+networkPolicy:
+  apiIngressFrom:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: ingress-nginx
+metrics:
+  serviceMonitor:
+    enabled: true
+    labels:
+      release: kube-prometheus-stack
+  prometheusRule:
+    enabled: true
+    labels:
+      release: kube-prometheus-stack
+    rules:
+      - alert: JobSchedulerApiDown
+        expr: up{job="job-scheduler-api"} == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "API pod {{ $labels.pod }} is down"

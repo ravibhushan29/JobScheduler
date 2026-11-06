@@ -1,0 +1,59 @@
+# Supply-chain security: dependency audit, image scan, SBOM.
+# Runs on every push to main, on every pull request, and weekly, so newly
+# published CVEs are caught even when nobody pushes.
+name: Security
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "17 5 * * 1" # Mondays 05:17 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: security-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pip-audit:
+    name: Dependency audit (pip-audit)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - run: pip install pip-audit==2.10.1
+      # Fails the job if any pinned runtime dependency has a known vulnerability.
+      - run: pip-audit --requirement requirements.txt --desc on
+
+  image-scan:
+    name: Image scan (Trivy) and SBOM
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build image
+        run: docker build --tag job-scheduler:scan .
+
+      - name: Scan image for CRITICAL/HIGH vulnerabilities
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: job-scheduler:scan
+          format: table
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"
+
+      # Runs even if the scan failed, so the SBOM is always available.
+      - name: Generate SBOM (SPDX JSON)
+        if: ${{ !cancelled() }}
+        uses: anchore/sbom-action@v0.24.3
+        with:
+          image: job-scheduler:scan
+          format: spdx-json
+          output-file: sbom.spdx.json
+          artifact-name: job-scheduler-sbom.spdx.json

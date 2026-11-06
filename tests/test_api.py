@@ -95,7 +95,7 @@ def test_readiness_reports_failed_dependency(client, monkeypatch):
 def test_job_row_exists_before_task_is_published(client, monkeypatch):
     seen = {}
 
-    def fake_send_task(name, *, args, kwargs, task_id, queue, retries):
+    def fake_send_task(name, *, args, kwargs, task_id, queue, retries, **options):
         seen["row"] = run(db.get_job(task_id))
         seen["queue"] = queue
 

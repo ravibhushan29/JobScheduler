@@ -18,6 +18,15 @@ from app.config import settings
 logger = logging.getLogger(__name__)
 
 
+def _delivery_options(job: dict) -> dict:
+    """Per-job priority and time limits, carried by the message (and kept on Celery retries)."""
+    options = {"priority": job["priority"] if job.get("priority") is not None else db.PRIORITIES["normal"]}
+    if job.get("timeout_seconds"):
+        options["soft_time_limit"] = job["timeout_seconds"]
+        options["time_limit"] = job["timeout_seconds"] + 10  # hard kill shortly after the soft limit
+    return options
+
+
 async def publish_job(job: dict) -> bool:
     """Publish `job` (a jobs row or the same keys) to its queue. Returns False if the broker refused."""
     try:
@@ -30,6 +39,7 @@ async def publish_job(job: dict) -> bool:
             task_id=job["task_id"],
             queue=job["queue"] or settings.DEFAULT_QUEUE_NAME,
             retries=job.get("retries") or 0,  # a recovered job keeps its Celery retry count
+            **_delivery_options(job),
         )
     except Exception:
         logger.warning(

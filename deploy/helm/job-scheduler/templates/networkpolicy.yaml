@@ -1,0 +1,44 @@
+{{- if .Values.networkPolicy.enabled }}
+# Only the API accepts traffic. Workers, scheduler and Flower accept none
+# (Flower is reached via port-forward). Egress is left open for the managed
+# Postgres/Redis endpoints; tighten it to their CIDRs if your CNI enforces
+# egress policy.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "job-scheduler.fullname" . }}-default-deny-ingress
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "job-scheduler.labels" . | nindent 4 }}
+  {{- include "job-scheduler.commonAnnotations" . }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "job-scheduler.selectorLabels" . | nindent 6 }}
+  policyTypes: [Ingress]
+{{- if .Values.api.enabled }}
+{{- $ctx := dict "root" . "name" "api" }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "job-scheduler.fullname" . }}-allow-api-ingress
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "job-scheduler.componentLabels" $ctx | nindent 4 }}
+  {{- include "job-scheduler.commonAnnotations" . }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "job-scheduler.componentSelectorLabels" $ctx | nindent 6 }}
+  policyTypes: [Ingress]
+  ingress:
+    - ports:
+        - port: {{ .Values.api.containerPort }}
+          protocol: TCP
+      {{- with .Values.networkPolicy.apiIngressFrom }}
+      from:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}
+{{- end }}

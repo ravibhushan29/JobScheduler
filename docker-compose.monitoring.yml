@@ -1,0 +1,50 @@
+# ---------------------------------------------------------------------------
+# Optional monitoring add-on: Prometheus (metrics + alert rules), Grafana
+# (the Job Scheduler dashboard) and Jaeger (traces).
+#
+#   docker compose -f docker-compose.yml -f docker-compose.monitoring.yml up -d --build
+#
+#   Grafana     http://localhost:3000   (admin / admin; dashboard "Job Scheduler")
+#   Prometheus  http://localhost:9090   (Alerts tab shows the rules in deploy/monitoring/alerts.yml)
+#   Jaeger      http://localhost:16686  (traces: job-scheduler-api / -worker / -scheduler)
+# ---------------------------------------------------------------------------
+x-tracing: &tracing
+  environment:
+    OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318
+
+services:
+  # Turn tracing on in every app service.
+  api: *tracing
+  worker: *tracing
+  worker_long: *tracing
+  scheduler: *tracing
+
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    restart: unless-stopped
+    volumes:
+      - ./deploy/monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./deploy/monitoring/alerts.yml:/etc/prometheus/alerts.yml:ro
+    ports:
+      - "9090:9090"
+
+  grafana:
+    image: grafana/grafana:12.1.1
+    restart: unless-stopped
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+    volumes:
+      - ./deploy/monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./deploy/monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "3000:3000"
+    depends_on: [prometheus]
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.72.0
+    restart: unless-stopped
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "16686:16686"

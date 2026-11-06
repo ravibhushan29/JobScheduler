@@ -11,13 +11,26 @@ Run any number of replicas of every component — API, workers, scheduler —
 and **each job, and each scheduled run, executes once.** Losing a pod loses
 no work.
 
+**Also in 5.0:**
+- **Integration:** signed **webhooks**, a live **event stream** and a generic `POST /v1/jobs` with
+  priority, delayed start, timeout and retry options.
+- **Orchestration:** **workflows** (fan-out / fan-in, with downstream steps skipped after a failure),
+  cron in **any time zone**, and a **failures view** with bulk retry.
+- **Access control:** scoped **API keys**, **tenants**, **rate limits** and an **audit log**.
+- **Visibility:** **Prometheus metrics**, a **Grafana dashboard** and **alerts**, **OpenTelemetry tracing**,
+  and an **operator console** at `/ui`.
+- **Tooling and deployment:** **Python and TypeScript SDKs**, a **Helm chart**, signed images with an SBOM,
+  **versioned API** (`/v1`), and load-test and **backup-restore drill** scripts.
+
 ## Contents
 
 - [Guarantees](#guarantees) · [How it works](#how-it-works) · [Quick start](#quick-start)
 - [Deploying to Kubernetes](#deploying-to-kubernetes) · [High availability](#high-availability)
 - [API overview](#api-overview) · [Configuration](#configuration) · [Testing](#testing)
 - [Operations](#operations) · [Extending](#extending)
-- 📚 **Full documentation, written for everyone (with 50 diagrams): [docs/](docs/README.md)**
+- 📚 **Full documentation, written for everyone (18 chapters, 66 diagrams): [docs/](docs/README.md)**
+- 🔌 Building on it? [Integration guide](docs/14-integration-guide.md) · SDKs: [Python](sdk/python/README.md), [TypeScript](sdk/typescript/README.md)
+- 📈 Running it? [Observability & DR](docs/17-observability.md) · [Security & tenants](docs/15-security-and-tenancy.md) · [Helm chart](deploy/helm/job-scheduler/README.md)
 - Manual walkthrough of every endpoint: [USER_TESTING.md](USER_TESTING.md) · Changes: [CHANGELOG.md](CHANGELOG.md)
 
 ---
@@ -30,7 +43,7 @@ no work.
 | A scheduler pod dies | The others keep firing on their next poll (≤ 5 s); no failover, no leader election |
 | The broker delivers a job's message twice (re-delivery, double publish) | The job runs once; the extra copy is dropped |
 | A copy arrives while the job is still running elsewhere | It waits, then is dropped when the job finishes |
-| A client retries `POST /tasks/*` or `POST /schedules` (same `Idempotency-Key`) | The original job/schedule is returned; nothing new is created |
+| A client retries `POST /v1/tasks/*` or `POST /v1/schedules` (same `Idempotency-Key`) | The original job/schedule is returned; nothing new is created |
 | A job is cancelled | No worker will ever start it, even if it never got the revoke broadcast |
 | The API or scheduler crashes after recording a job but before publishing it | The outbox relay publishes it |
 | Redis is down when a job is submitted | The job is accepted and stored, then published when Redis is back |
@@ -136,9 +149,9 @@ For development, `docker compose up --build` runs one replica of each with hot r
 | http://localhost:5555 | Flower (login: `FLOWER_BASIC_AUTH`) |
 
 ```bash
-curl -X POST localhost:8000/tasks/add -H "X-API-Key: <key>" -H "Idempotency-Key: demo-1" \
+curl -X POST localhost:8000/v1/tasks/add -H "X-API-Key: <key>" -H "Idempotency-Key: demo-1" \
      -H "Content-Type: application/json" -d '{"x": 3, "y": 4}'
-curl "localhost:8000/jobs?limit=5" -H "X-API-Key: <key>"
+curl "localhost:8000/v1/jobs?limit=5" -H "X-API-Key: <key>"
 ```
 
 ### Local, without Docker
@@ -219,16 +232,16 @@ Every route except `/health*` needs `X-API-Key`. Full schemas and examples are i
 | Method & path | Purpose |
 |---|---|
 | `GET /health` · `GET /health/ready` | Liveness · readiness (DB + broker, 503 otherwise) |
-| `POST /tasks/add` · `/long` · `/flaky` · `/notify` | Queue one task; `Idempotency-Key` supported |
-| `POST /tasks/test-batch` | Queue one of each, including a guaranteed failure |
-| `GET /jobs?status=&limit=&offset=` | Job history, newest first |
-| `GET /jobs/{id}` | One job: args, result, error, traceback, `retries`, `attempts`, worker, `retry_of`, `schedule_id`, `published_at` |
-| `GET /jobs/{id}/status` | Live Celery state (incl. PROGRESS); falls back to the job history after expiry |
-| `POST /jobs/{id}/retry[?force=true]` | Re-submit as a new job linked by `retry_of` (409 unless it failed); `Idempotency-Key` supported |
-| `DELETE /jobs/{id}` | Cancel cluster-wide (409 if already finished) |
-| `POST /schedules` | Create a `once` / `interval` / `cron` schedule; `Idempotency-Key` supported |
-| `GET /schedules`, `GET /schedules/{id}` | List / get (system schedules have `system: true`) |
-| `PATCH /schedules/{id}` · `DELETE /schedules/{id}` | Pause, resume, retime · delete (409 for system schedules) |
+| `POST /v1/tasks/add` · `/long` · `/flaky` · `/notify` | Queue one task; `Idempotency-Key` supported |
+| `POST /v1/tasks/test-batch` | Queue one of each, including a guaranteed failure |
+| `GET /v1/jobs?status=&limit=&offset=` | Job history, newest first |
+| `GET /v1/jobs/{id}` | One job: args, result, error, traceback, `retries`, `attempts`, worker, `retry_of`, `schedule_id`, `published_at` |
+| `GET /v1/jobs/{id}/status` | Live Celery state (incl. PROGRESS); falls back to the job history after expiry |
+| `POST /v1/jobs/{id}/retry[?force=true]` | Re-submit as a new job linked by `retry_of` (409 unless it failed); `Idempotency-Key` supported |
+| `DELETE /v1/jobs/{id}` | Cancel cluster-wide (409 if already finished) |
+| `POST /v1/schedules` | Create a `once` / `interval` / `cron` schedule; `Idempotency-Key` supported |
+| `GET /v1/schedules`, `GET /v1/schedules/{id}` | List / get (system schedules have `system: true`) |
+| `PATCH /v1/schedules/{id}` · `DELETE /v1/schedules/{id}` | Pause, resume, retime · delete (409 for system schedules) |
 
 **Idempotency:** repeating a POST with the same `Idempotency-Key` returns the original with **200** and `Idempotent-Replayed: true`. Reusing a key for a different request is **409**.
 
@@ -300,7 +313,7 @@ Afterwards it checks every job in the database for extra runs, gaps, stuck jobs 
 ## Operations
 
 - **Health at a glance:**
-  - `GET /jobs?status=STARTED` shows what's running.
+  - `GET /v1/jobs?status=STARTED` shows what's running.
   - A job with `attempts > retries + 1` was re-run after a worker loss.
   - `published_at: null` on an old job means the broker was unreachable.
 - **Log lines to alert on:** `[FAILURE]`, `[RECOVER]` (a worker was lost), `[ABANDONED]`, `[LEASE LOST]` (a worker was cut off from the DB longer than its lease), `[OUTBOX]` (publish was delayed).
@@ -314,7 +327,7 @@ Afterwards it checks every job in the database for extra runs, gaps, stuck jobs 
 
 - **New task:** define it in `app/tasks.py` with an explicit `name=` and `queue=`. It inherits the execution guard automatically. Add it to `_PUBLIC_TASKS` if the API may submit or schedule it. If it has external side effects, pass `self.request.id` to that system as an idempotency key.
 - **New periodic job:** add an entry to `SYSTEM_SCHEDULES` in `app/tasks.py`. Every scheduler replica seeds it on startup, and it fires once per due time.
-- **New runtime schedule:** `POST /schedules`; no code change needed.
+- **New runtime schedule:** `POST /v1/schedules`; no code change needed.
 - **New column:** add it to the table in `app/db.py`. Migrations add missing columns and indexes on the next start.
 
 ---

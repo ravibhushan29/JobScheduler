@@ -148,12 +148,51 @@ class Settings:
     # auth (a warning is logged) — local dev only.
     # ------------------------------------------------------------------
     API_KEYS: list[str] = _list_env("API_KEYS")
+    # Managed keys (POST /v1/admin/api-keys) are cached in each API process for
+    # this long, so a revoked key stops working within this many seconds.
+    API_KEY_CACHE_SECONDS: int = _int_env("API_KEY_CACHE_SECONDS", 10)
+    # Requests per minute allowed for each key that has no limit of its own
+    # (0 = unlimited). Counted in Redis, so the limit holds across API replicas.
+    DEFAULT_RATE_LIMIT_PER_MINUTE: int = _int_env("DEFAULT_RATE_LIMIT_PER_MINUTE", 0)
+    # Most enabled schedules one tenant may have (0 = unlimited).
+    TENANT_MAX_ACTIVE_SCHEDULES: int = _int_env("TENANT_MAX_ACTIVE_SCHEDULES", 0)
+    # Audit-log rows older than this are deleted by the daily cleanup.
+    AUDIT_RETENTION_DAYS: int = _int_env("AUDIT_RETENTION_DAYS", 365)
+
+    # ------------------------------------------------------------------
+    # Webhooks (a job's `callback_url` is called when it finishes)
+    #
+    # Each request is signed: X-JobScheduler-Signature = "sha256=" +
+    # HMAC-SHA256(WEBHOOK_SIGNING_SECRET, "<timestamp>.<body>"). Deliveries are
+    # retried with backoff, from the scheduler service (any replica, once each).
+    # ------------------------------------------------------------------
+    WEBHOOK_SIGNING_SECRET: str = os.getenv("WEBHOOK_SIGNING_SECRET", "")
+    # Hosts callbacks may point at, e.g. "api.example.com,*.internal.example.com".
+    # Empty allows any host. Set it in production so the service can't be used
+    # to call arbitrary internal addresses.
+    WEBHOOK_ALLOWED_HOSTS: list[str] = _list_env("WEBHOOK_ALLOWED_HOSTS")
+    WEBHOOK_TIMEOUT_SECONDS: int = _int_env("WEBHOOK_TIMEOUT_SECONDS", 10)
+    WEBHOOK_MAX_ATTEMPTS: int = _int_env("WEBHOOK_MAX_ATTEMPTS", 8)  # ~1 day with backoff
+    WEBHOOK_POLL_INTERVAL_SECONDS: int = _int_env("WEBHOOK_POLL_INTERVAL_SECONDS", 2)
+
+    # ------------------------------------------------------------------
+    # Observability
+    # ------------------------------------------------------------------
+    # GET /metrics (Prometheus). Values come from the shared database, so every
+    # API replica reports the same cluster-wide numbers.
+    METRICS_ENABLED: bool = _bool_env("METRICS_ENABLED", True)
+    METRICS_CACHE_SECONDS: int = _int_env("METRICS_CACHE_SECONDS", 10)
+    METRICS_WINDOW_SECONDS: int = _int_env("METRICS_WINDOW_SECONDS", 300)  # for "recent" metrics
+    # OpenTelemetry tracing is on when an OTLP endpoint is configured, e.g.
+    # OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318 (standard OTel env vars apply).
+    OTEL_EXPORTER_OTLP_ENDPOINT: str = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
+    TRACING_ENABLED: bool = _bool_env("TRACING_ENABLED", bool(os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT")))
 
     # ------------------------------------------------------------------
     # App and logging
     # ------------------------------------------------------------------
     APP_NAME: str = os.getenv("APP_NAME", "job-scheduler")
-    APP_VERSION: str = "4.0.0"
+    APP_VERSION: str = "5.0.0"
     LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO").upper()
     LOG_FORMAT: str = os.getenv("LOG_FORMAT", "text").lower()  # "text" or "json"
     # Also write rotating files under LOG_DIR (local dev). In containers keep

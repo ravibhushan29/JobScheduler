@@ -1,0 +1,33 @@
+{{- range (include "job-scheduler.components" . | fromYamlArray) }}
+{{- $c := index $.Values .key }}
+{{- if and $c.enabled $c.hpa.enabled }}
+{{- $ctx := dict "root" $ "name" .name }}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "job-scheduler.componentName" $ctx }}
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "job-scheduler.componentLabels" $ctx | nindent 4 }}
+  {{- include "job-scheduler.commonAnnotations" $ }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "job-scheduler.componentName" $ctx }}
+  minReplicas: {{ $c.hpa.minReplicas }}
+  maxReplicas: {{ $c.hpa.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ $c.hpa.targetCPUUtilizationPercentage }}
+  {{- with $c.hpa.behavior }}
+  behavior:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+{{- end }}
+{{- end }}

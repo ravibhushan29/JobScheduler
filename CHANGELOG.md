@@ -1,5 +1,106 @@
 # Changelog
 
+## 5.0.0 — 2026-11-06
+
+Features for building on the service, running it as a shared platform, and
+seeing what it does. All database changes are additive (new tables and
+nullable columns), so 4.0 and 5.0 pods can run side by side during a rolling upgrade.
+
+### Upgrade notes
+
+- **Roll out the schedulers first if you'll use delayed jobs right away.** A
+  4.0 scheduler would publish a delayed job early. Everything else is safe in
+  any order: priorities use the same Redis lists 4.0 workers already read.
+- **New dependencies** in `requirements.txt` (`httpx`, `prometheus-client`,
+  `tzdata`, OpenTelemetry). Rebuild the image.
+- **Set `WEBHOOK_SIGNING_SECRET` and `WEBHOOK_ALLOWED_HOSTS`** before anyone uses `callback_url`.
+- **Unversioned paths are deprecated.** `/tasks/*`, `/jobs…` and `/schedules…` still work exactly as before,
+  but now answer with `Deprecation: true` and a `Link` to the `/v1` path, and are hidden from `/docs`.
+  Move clients to `/v1` (a find-and-replace). Policy: [docs/18-api-versioning.md](docs/18-api-versioning.md).
+- **A job's final state is now written once.** Before, a late write could replace it, for example
+  SUCCESS arriving after a cancel. The first final state now always wins. This is what makes webhooks and
+  workflow steps fire exactly once.
+
+### Added
+
+- **API versioning:** every endpoint under `/v1`.
+- **`POST /v1/jobs`:** submit any public task, with per-job options:
+  - `priority` (`high`, `normal` or `low`, using Redis priority lists);
+  - a delayed start (`delay_seconds` or `run_at`), stored durably and released by the scheduler;
+  - `timeout_seconds`;
+  - `max_retries`;
+  - `callback_url`.
+- **Webhooks:**
+  - recorded in the same transaction as the job's final state (an outbox), and sent by any scheduler replica;
+  - signed with HMAC-SHA256 and a timestamp; retried with backoff;
+  - delivery status at `GET /v1/jobs/{id}/webhooks`;
+  - host allow-list (`WEBHOOK_ALLOWED_HOSTS`).
+- **Live event stream:** `GET /v1/jobs/{id}/events` (server-sent events).
+- **Workflows:** `POST /v1/workflows`, and `GET` / `DELETE` on them.
+  - Steps run in dependency order: fan-out and fan-in.
+  - When a step fails, everything downstream of it is skipped.
+  - A step that depends on several others is released exactly once, even when its parents finish at the same moment on different workers (the workflow row is locked).
+  - A workflow can have its own webhook, and supports `Idempotency-Key`.
+  - New job status `WAITING`.
+- **Failures view:** `GET /v1/jobs/failures` groups failed jobs by task and error; `POST /v1/jobs/failures/retry` re-submits them in bulk, at most once per failed job.
+- **Cron time zones:** a `timezone` field on cron schedules, following daylight-saving changes. A local time that repeats when clocks go back fires once.
+- **Managed API keys:**
+  - `POST`, `GET` and `DELETE /v1/admin/api-keys`;
+  - scopes (`jobs:read`, `jobs:write`, `schedules:read`, `schedules:write`, `admin`);
+  - optional `tenant`, `allowed_tasks` and `rate_limit_per_minute`;
+  - stored as SHA-256 hashes.
+  - Existing `API_KEYS` become full-access bootstrap keys.
+- **Tenants:**
+  - a tenant key sees only its own jobs, schedules and workflows (anything else answers 404);
+  - idempotency keys are separate per tenant;
+  - `TENANT_MAX_ACTIVE_SCHEDULES` quota.
+- **Rate limits** per key and minute, counted in Redis across API replicas. Over the limit: `429` with `Retry-After` and `X-RateLimit-*` headers. New error types `forbidden` and `rate_limited`.
+- **Audit log:** `GET /v1/admin/audit-log` records every submit, retry, cancel, bulk retry, schedule change, workflow change and key change.
+- **Metrics** at `GET /metrics` (Prometheus).
+  - Cluster-wide, from the database: jobs, recent finishes, wait and run-time quantiles, oldest queued job, Redis queue depth, outbox backlog, schedule lateness, webhooks, workflows.
+  - Reliability event counters: duplicates dropped or deferred, workers lost and recovered, leases lost, outbox relays, schedules fired, webhooks, rate limits.
+  - Per API process: HTTP metrics.
+- **Monitoring kit** in `deploy/monitoring/`:
+  - a Grafana dashboard (17 panels);
+  - 9 Prometheus alert rules (checked with `promtool`);
+  - Prometheus config;
+  - `docker-compose.monitoring.yml` with Prometheus, Grafana and Jaeger.
+- **OpenTelemetry tracing** (turned on by `OTEL_EXPORTER_OTLP_ENDPOINT`) for FastAPI, SQLAlchemy, Celery publish and run, and httpx. One trace spans API → worker.
+- **Operator console** at `/ui`: overview, jobs, failures (retry a whole group), schedules (pause, resume, delete) and workflows (step detail, cancel).
+- **SDKs:**
+  - `sdk/python` (httpx);
+  - `sdk/typescript`, with no dependencies and types generated from `sdk/openapi.json`.
+  - Both retry safely with idempotency keys, wait, stream events, cover schedules and workflows, and verify webhooks.
+- **Helm chart** in `deploy/helm/job-scheduler`, at parity with the kustomize manifests. It has a values schema, an optional ServiceMonitor and PrometheusRule, and `examples/monitoring-values.yaml`.
+- **Supply chain:**
+  - a weekly and per-push `pip-audit` and Trivy scan, plus an SBOM artifact;
+  - a release workflow that pushes a multi-arch image to GHCR, with provenance and an SBOM, signed with cosign (keyless);
+  - Dependabot.
+- **CI:** a check that `sdk/openapi.json` matches the API, and TypeScript SDK build and tests.
+- **Scripts:**
+  - `scripts/load_test.py`, which measures throughput and latency and checks exactly-once;
+  - `scripts/backup_restore_drill.sh`, which dumps, restores into a throwaway Postgres, compares every table and runs the app on the copy;
+  - `scripts/export_openapi.py`.
+- **Docs:** new chapters 15 (security & tenants), 16 (webhooks, workflows & job options), 17 (observability, performance & DR) and 18 (API versioning). The integration guide, the configuration chapter and the runbooks are updated. 66 diagrams.
+
+### Tested
+
+- **Automated tests,** on SQLite and on Postgres: 31 new feature tests and 7 SDK tests, plus the TypeScript SDK's own tests.
+- **End-to-end checks against the multi-replica Docker stack (20 of 20 pass):**
+  - webhooks are signed, retried and sent once;
+  - per-job timeouts are enforced by real workers;
+  - priority order is followed (5 high-priority jobs ran before 5 low-priority ones);
+  - delayed start works;
+  - a workflow with fan-in and a failed branch behaves as described;
+  - a rate limit holds across 2 API replicas;
+  - tenant isolation holds across replicas;
+  - the event stream works;
+  - Prometheus scrapes, the alert rules load, the Grafana dashboard loads, and Jaeger receives traces spanning API → worker;
+  - the console works.
+- **Chaos test:** all 7 scenarios still pass.
+- **Load test:** 5,000 jobs; each ran exactly once, with no duplicates.
+- **Backup and restore drill:** passes.
+
 ## 4.0.0 — 2026-11-05
 
 Multi-pod, highly available operation: every component can run as many

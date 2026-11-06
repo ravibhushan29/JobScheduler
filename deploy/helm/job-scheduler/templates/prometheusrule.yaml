@@ -1,0 +1,24 @@
+{{- if .Values.metrics.prometheusRule.enabled }}
+{{- $pr := .Values.metrics.prometheusRule }}
+# Needs the Prometheus Operator CRDs. Rules come from metrics.prometheusRule.rules.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "job-scheduler.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "job-scheduler.labels" . | nindent 4 }}
+    {{- with $pr.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- include "job-scheduler.commonAnnotations" . }}
+spec:
+  {{- if $pr.rules }}
+  groups:
+    - name: {{ include "job-scheduler.fullname" . }}
+      rules:
+        {{- toYaml $pr.rules | nindent 8 }}
+  {{- else }}
+  groups: []
+  {{- end }}
+{{- end }}

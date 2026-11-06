@@ -1,0 +1,16 @@
+# Non-secret settings, shared by every pod.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "job-scheduler.configMapName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "job-scheduler.labels" . | nindent 4 }}
+  {{- include "job-scheduler.commonAnnotations" . }}
+data:
+  AUTO_MIGRATE: "false" # the migrate init container does it
+  {{- range $k, $v := .Values.config }}
+  {{- if ne $k "AUTO_MIGRATE" }}
+  {{ $k }}: {{ $v | toString | quote }}
+  {{- end }}
+  {{- end }}

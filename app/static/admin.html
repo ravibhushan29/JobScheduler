@@ -1,0 +1,255 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Job Scheduler Console</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 16 16%22%3E%3Crect width=%2216%22 height=%2216%22 rx=%223%22 fill=%22%232f5bd3%22/%3E%3C/svg%3E">
+<style>
+  :root {
+    --bg: #f7f7f8; --panel: #ffffff; --text: #1d1d1f; --muted: #6b6b73; --line: #e3e3e8;
+    --accent: #2f5bd3; --ok: #1f8a4c; --bad: #c4362c; --warn: #b26b00; --chip: #eef1f8;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #141416; --panel: #1d1d20; --text: #ececef; --muted: #9a9aa3; --line: #2e2e33;
+      --accent: #7ea2ff; --ok: #4cc283; --bad: #ff7a6e; --warn: #f0b35a; --chip: #262a36;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; background: var(--bg); color: var(--text); }
+  header { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; padding: 12px 16px; background: var(--panel); border-bottom: 1px solid var(--line); }
+  header h1 { font-size: 16px; margin: 0 12px 0 0; }
+  nav button { background: none; border: 0; padding: 6px 10px; border-radius: 6px; color: var(--muted); cursor: pointer; font: inherit; }
+  nav button.active { background: var(--chip); color: var(--text); font-weight: 600; }
+  .grow { flex: 1; }
+  input, select { font: inherit; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--text); }
+  button.act { font: inherit; padding: 5px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--text); cursor: pointer; }
+  button.act:hover { border-color: var(--accent); }
+  button.danger { color: var(--bad); }
+  main { padding: 16px; max-width: 1200px; margin: 0 auto; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; margin-bottom: 16px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px; }
+  .card .n { font-size: 24px; font-weight: 650; font-variant-numeric: tabular-nums; }
+  .card .l { color: var(--muted); font-size: 12px; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; overflow: auto; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { font-size: 12px; color: var(--muted); font-weight: 600; white-space: nowrap; }
+  td.mono, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+  .st { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 12px; background: var(--chip); }
+  .st.SUCCESS, .st.DELIVERED { color: var(--ok); } .st.FAILURE, .st.FAILED { color: var(--bad); }
+  .st.RETRY, .st.WAITING, .st.PENDING { color: var(--warn); } .st.STARTED, .st.RUNNING { color: var(--accent); }
+  .toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 10px; }
+  .muted { color: var(--muted); }
+  #msg { margin: 0 0 12px; min-height: 1em; }
+  #msg.err { color: var(--bad); }
+  pre { white-space: pre-wrap; word-break: break-word; margin: 0; }
+  .hidden { display: none; }
+  @media (max-width: 640px) { header { gap: 8px; } th:nth-child(n+5), td:nth-child(n+5) { display: none; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>Job Scheduler</h1>
+  <nav id="tabs">
+    <button data-tab="overview" class="active">Overview</button>
+    <button data-tab="jobs">Jobs</button>
+    <button data-tab="failures">Failures</button>
+    <button data-tab="schedules">Schedules</button>
+    <button data-tab="workflows">Workflows</button>
+  </nav>
+  <span class="grow"></span>
+  <input id="key" type="password" placeholder="API key" autocomplete="off" aria-label="API key">
+  <button class="act" id="save">Use key</button>
+</header>
+<main>
+  <p id="msg" role="status"></p>
+
+  <section id="overview">
+    <div class="cards" id="cards"></div>
+    <h3>Most common failures</h3>
+    <div class="panel"><table id="topfail"></table></div>
+  </section>
+
+  <section id="jobs" class="hidden">
+    <div class="toolbar">
+      <select id="jobStatus" aria-label="Status">
+        <option value="">All statuses</option>
+        <option>QUEUED</option><option>WAITING</option><option>STARTED</option><option>RETRY</option>
+        <option>SUCCESS</option><option>FAILURE</option><option>REVOKED</option>
+      </select>
+      <input id="jobTask" placeholder="task name, e.g. app.tasks.add" aria-label="Task name">
+      <button class="act" id="jobRefresh">Refresh</button>
+      <span class="muted" id="jobCount"></span>
+    </div>
+    <div class="panel"><table id="jobTable"></table></div>
+  </section>
+
+  <section id="failures" class="hidden">
+    <p class="muted">Failed jobs that haven't been re-submitted, grouped by task and error.</p>
+    <div class="panel"><table id="failTable"></table></div>
+  </section>
+
+  <section id="schedules" class="hidden">
+    <div class="panel"><table id="schedTable"></table></div>
+  </section>
+
+  <section id="workflows" class="hidden">
+    <div class="panel"><table id="wfTable"></table></div>
+    <div id="wfDetail" class="panel hidden" style="margin-top:12px"></div>
+  </section>
+</main>
+
+<script>
+"use strict";
+// The key lives only in this tab's sessionStorage, never in the page source or a cookie.
+const store = {
+  get() { try { return sessionStorage.getItem("jsKey") || ""; } catch { return ""; } },
+  set(v) { try { sessionStorage.setItem("jsKey", v); } catch { /* storage blocked: keep in memory */ } memoryKey = v; },
+};
+let memoryKey = store.get();
+const $ = (id) => document.getElementById(id);
+const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const when = (v) => (v ? new Date(v).toLocaleString() : "—");
+const status = (s) => `<span class="st ${esc(s)}">${esc(s)}</span>`;
+
+function say(text, isError = false) { const m = $("msg"); m.textContent = text; m.className = isError ? "err" : ""; }
+
+async function api(path, options = {}) {
+  const headers = { ...(options.body ? { "Content-Type": "application/json" } : {}), ...(memoryKey ? { "X-API-Key": memoryKey } : {}) };
+  const res = await fetch(`/v1${path}`, { ...options, headers });
+  const data = await res.json().catch(() => null);
+  if (res.status === 401) throw new Error("Enter a valid API key (top right) to load data.");
+  if (!res.ok) throw new Error(data?.error?.message || `HTTP ${res.status}`);
+  return data;
+}
+
+async function guarded(fn) {
+  try { await fn(); } catch (e) { say(e.message, true); }
+}
+
+// ---------------------------------------------------------------- overview
+async function loadOverview() {
+  const names = ["QUEUED", "WAITING", "STARTED", "RETRY", "SUCCESS", "FAILURE", "REVOKED"];
+  const counts = await Promise.all(names.map((s) => api(`/jobs?limit=1&status=${s}`).then((r) => r.total)));
+  const schedules = await api("/schedules?limit=200&enabled_only=true");
+  $("cards").innerHTML = names.map((n, i) => `<div class="card"><div class="n">${counts[i]}</div><div class="l">${n.toLowerCase()} jobs</div></div>`).join("")
+    + `<div class="card"><div class="n">${schedules.length}</div><div class="l">active schedules</div></div>`;
+  const { groups } = await api("/jobs/failures?limit=5");
+  $("topfail").innerHTML = groups.length
+    ? "<tr><th>Task</th><th>Error</th><th>Jobs</th><th>Last failed</th></tr>" + groups.map((g) =>
+        `<tr><td class="mono">${esc(g.task_name)}</td><td>${esc(g.error)}</td><td>${g.count}</td><td>${when(g.last_failed_at)}</td></tr>`).join("")
+    : '<tr><td class="muted">No unretried failures.</td></tr>';
+}
+
+// ---------------------------------------------------------------- jobs
+async function loadJobs() {
+  const params = new URLSearchParams({ limit: "100" });
+  if ($("jobStatus").value) params.set("status", $("jobStatus").value);
+  if ($("jobTask").value.trim()) params.set("task_name", $("jobTask").value.trim());
+  const page = await api(`/jobs?${params}`);
+  $("jobCount").textContent = `${page.jobs.length} of ${page.total}`;
+  $("jobTable").innerHTML = "<tr><th>Status</th><th>Task</th><th>Job ID</th><th>Submitted</th><th>Result / error</th><th>Attempts</th><th></th></tr>"
+    + page.jobs.map((j) => `<tr>
+        <td>${status(j.status)}</td><td class="mono">${esc(j.task_name)}</td><td class="mono">${esc(j.task_id)}</td>
+        <td>${when(j.submitted_at)}</td><td><pre>${esc(j.error ?? JSON.stringify(j.result))}</pre></td><td>${j.attempts}</td>
+        <td>${["SUCCESS", "FAILURE", "REVOKED"].includes(j.status)
+          ? `<button class="act" data-retry="${esc(j.task_id)}">Retry</button>`
+          : `<button class="act danger" data-cancel="${esc(j.task_id)}">Cancel</button>`}</td></tr>`).join("");
+}
+
+// ---------------------------------------------------------------- failures
+async function loadFailures() {
+  const { groups } = await api("/jobs/failures?limit=100");
+  $("failTable").innerHTML = groups.length
+    ? "<tr><th>Task</th><th>Error</th><th>Jobs</th><th>First</th><th>Last</th><th></th></tr>" + groups.map((g, i) => `<tr>
+        <td class="mono">${esc(g.task_name)}</td><td>${esc(g.error)}</td><td>${g.count}</td>
+        <td>${when(g.first_failed_at)}</td><td>${when(g.last_failed_at)}</td>
+        <td><button class="act" data-group="${i}">Retry all ${g.count}</button></td></tr>`).join("")
+    : '<tr><td class="muted">No unretried failures.</td></tr>';
+  $("failTable").groups = groups;
+}
+
+// ---------------------------------------------------------------- schedules
+async function loadSchedules() {
+  const rows = await api("/schedules?limit=200");
+  $("schedTable").innerHTML = "<tr><th>ID</th><th>Task</th><th>When</th><th>Next run</th><th>Runs</th><th>State</th><th></th></tr>"
+    + rows.map((s) => {
+      const timing = s.schedule_type === "cron" ? `cron ${s.cron_expr}${s.timezone ? " (" + s.timezone + ")" : " UTC"}`
+        : s.schedule_type === "interval" ? `every ${s.interval_seconds}s` : `once at ${when(s.run_at)}`;
+      const actions = s.system ? '<span class="muted">system</span>'
+        : `<button class="act" data-toggle="${s.id}" data-on="${s.enabled}">${s.enabled ? "Pause" : "Resume"}</button>
+           <button class="act danger" data-delete="${s.id}">Delete</button>`;
+      return `<tr><td>${s.id}</td><td class="mono">${esc(s.task_name)}</td><td>${esc(timing)}</td><td>${when(s.next_run_at)}</td>
+        <td>${s.run_count}</td><td>${s.enabled ? status("RUNNING").replace(">RUNNING<", ">active<") : '<span class="st">paused</span>'}</td><td>${actions}</td></tr>`;
+    }).join("");
+}
+
+// ---------------------------------------------------------------- workflows
+async function loadWorkflows() {
+  const rows = await api("/workflows?limit=100");
+  $("wfTable").innerHTML = rows.length
+    ? "<tr><th>Status</th><th>Name</th><th>ID</th><th>Created</th><th>Finished</th></tr>" + rows.map((w) => `<tr>
+        <td>${status(w.status)}</td><td>${esc(w.name ?? "—")}</td>
+        <td class="mono"><a href="#" data-wf="${esc(w.id)}">${esc(w.id)}</a></td><td>${when(w.created_at)}</td><td>${when(w.finished_at)}</td></tr>`).join("")
+    : '<tr><td class="muted">No workflows yet.</td></tr>';
+}
+
+async function showWorkflow(id) {
+  const w = await api(`/workflows/${encodeURIComponent(id)}`);
+  const d = $("wfDetail");
+  d.classList.remove("hidden");
+  d.innerHTML = `<table><tr><th colspan="5">${esc(w.name ?? w.id)} — ${status(w.status)}
+      ${w.status === "RUNNING" ? `<button class="act danger" data-wfcancel="${esc(w.id)}">Cancel workflow</button>` : ""}</th></tr>
+    <tr><th>Step</th><th>Status</th><th>Depends on</th><th>Task</th><th>Result / error</th></tr>`
+    + w.steps.map((s) => `<tr><td class="mono">${esc(s.id)}</td><td>${status(s.status)}</td><td class="mono">${esc(s.depends_on.join(", ") || "—")}</td>
+        <td class="mono">${esc(s.task_name)}</td><td><pre>${esc(s.error ?? JSON.stringify(s.result))}</pre></td></tr>`).join("") + "</table>";
+}
+
+// ---------------------------------------------------------------- wiring
+const loaders = { overview: loadOverview, jobs: loadJobs, failures: loadFailures, schedules: loadSchedules, workflows: loadWorkflows };
+let current = "overview";
+
+function show(tab) {
+  current = tab;
+  document.querySelectorAll("#tabs button").forEach((b) => b.classList.toggle("active", b.dataset.tab === tab));
+  Object.keys(loaders).forEach((t) => $(t).classList.toggle("hidden", t !== tab));
+  say("");
+  guarded(loaders[tab]);
+}
+
+$("tabs").addEventListener("click", (e) => { if (e.target.dataset.tab) show(e.target.dataset.tab); });
+$("save").addEventListener("click", () => { store.set($("key").value.trim()); $("key").value = ""; show(current); });
+$("jobRefresh").addEventListener("click", () => guarded(loadJobs));
+$("jobStatus").addEventListener("change", () => guarded(loadJobs));
+
+document.body.addEventListener("click", (e) => guarded(async () => {
+  const t = e.target;
+  if (t.dataset.cancel && confirm("Cancel this job?")) {
+    await api(`/jobs/${encodeURIComponent(t.dataset.cancel)}`, { method: "DELETE" }); say("Job cancelled."); await loadJobs();
+  } else if (t.dataset.retry) {
+    const r = await api(`/jobs/${encodeURIComponent(t.dataset.retry)}/retry?force=true`, { method: "POST", headers: {} });
+    say(`Re-submitted as ${r.task_id}.`); await loadJobs();
+  } else if (t.dataset.group !== undefined) {
+    const g = $("failTable").groups[Number(t.dataset.group)];
+    if (!confirm(`Re-submit ${g.count} failed ${g.task_name} job(s)?`)) return;
+    const r = await api("/jobs/failures/retry", { method: "POST", body: JSON.stringify({ task_name: g.task_name, error: g.error, limit: 1000 }) });
+    say(`Re-submitted ${r.retried} job(s).`); await loadFailures();
+  } else if (t.dataset.toggle) {
+    await api(`/schedules/${t.dataset.toggle}`, { method: "PATCH", body: JSON.stringify({ enabled: t.dataset.on !== "true" }) });
+    await loadSchedules();
+  } else if (t.dataset.delete && confirm("Delete this schedule? Jobs it already created are kept.")) {
+    await api(`/schedules/${t.dataset.delete}`, { method: "DELETE" }); await loadSchedules();
+  } else if (t.dataset.wf) {
+    e.preventDefault(); await showWorkflow(t.dataset.wf);
+  } else if (t.dataset.wfcancel && confirm("Cancel every unfinished step?")) {
+    await api(`/workflows/${encodeURIComponent(t.dataset.wfcancel)}`, { method: "DELETE" }); await showWorkflow(t.dataset.wfcancel); await loadWorkflows();
+  }
+}));
+
+show("overview");
+setInterval(() => { if (!document.hidden && current !== "workflows") guarded(loaders[current]); }, 10000);
+</script>
+</body>
+</html>

@@ -150,6 +150,17 @@ jobs = Table(
     Column("submitted_at", UtcDateTime, nullable=False),
     Column("started_at", UtcDateTime),
     Column("finished_at", UtcDateTime),
+    # --- 5.0: per-job options ---
+    Column("tenant", String(255)),  # owner, from the API key; NULL = no tenant
+    Column("priority", Integer),  # broker priority: 0 high, 3 normal, 6 low (Redis: lower runs first)
+    Column("run_after", UtcDateTime),  # not published before this time (delayed start)
+    Column("timeout_seconds", Integer),  # per-job soft time limit (hard limit = +10 s)
+    Column("max_retries", Integer),  # per-job override of the task's retry limit
+    Column("callback_url", String(2048)),  # webhook called when the job finishes
+    # --- 5.0: workflows ---
+    Column("workflow_id", String(255)),
+    Column("workflow_step", String(255)),  # step id, unique within its workflow
+    Column("depends_on", JSON),  # step ids that must succeed first
 )
 Index("idx_jobs_status", jobs.c.status)
 Index("idx_jobs_submitted_at", jobs.c.submitted_at)
@@ -157,6 +168,96 @@ Index("idx_jobs_finished_at", jobs.c.finished_at)
 Index("idx_jobs_published_at", jobs.c.published_at)
 Index("idx_jobs_lease", jobs.c.status, jobs.c.lease_expires_at)
 Index("uq_jobs_idempotency_key", jobs.c.idempotency_key, unique=True)
+Index("idx_jobs_tenant", jobs.c.tenant, jobs.c.submitted_at)
+Index("idx_jobs_workflow", jobs.c.workflow_id)
+Index("idx_jobs_retry_of", jobs.c.retry_of)
+
+#: Status of a workflow step that is waiting for the steps it depends on.
+WAITING = "WAITING"
+
+#: API priority names -> broker priority (Redis consumes lower numbers first).
+PRIORITIES = {"high": 0, "normal": 3, "low": 6}
+PRIORITY_NAMES = {value: name for name, value in PRIORITIES.items()}
+
+workflows = Table(
+    "workflows",
+    metadata,
+    Column("id", String(255), primary_key=True),
+    Column("name", String(255)),
+    Column("tenant", String(255)),
+    Column("status", String(32), nullable=False, server_default="RUNNING"),  # RUNNING | SUCCESS | FAILURE | REVOKED
+    Column("callback_url", String(2048)),  # called once, when every step has finished
+    Column("idempotency_key", String(255)),
+    Column("created_at", UtcDateTime, nullable=False),
+    Column("finished_at", UtcDateTime),
+)
+Index("uq_workflows_idempotency_key", workflows.c.idempotency_key, unique=True)
+Index("idx_workflows_tenant", workflows.c.tenant, workflows.c.created_at)
+
+webhook_deliveries = Table(
+    "webhook_deliveries",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("event", String(64), nullable=False),  # job.finished | workflow.finished
+    Column("subject_id", String(255), nullable=False),  # task_id or workflow id
+    Column("url", String(2048), nullable=False),
+    Column("payload", JSON, nullable=False),
+    Column("status", String(16), nullable=False, server_default="PENDING"),  # PENDING | DELIVERED | FAILED
+    Column("attempts", Integer, nullable=False, server_default="0"),
+    Column("next_attempt_at", UtcDateTime, nullable=False),
+    Column("last_status_code", Integer),
+    Column("last_error", Text),
+    Column("version", Integer, nullable=False, server_default="0"),  # optimistic claim
+    Column("created_at", UtcDateTime, nullable=False),
+    Column("delivered_at", UtcDateTime),
+    sqlite_autoincrement=True,
+)
+Index("idx_webhooks_due", webhook_deliveries.c.status, webhook_deliveries.c.next_attempt_at)
+Index("idx_webhooks_subject", webhook_deliveries.c.subject_id)
+
+api_keys = Table(
+    "api_keys",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("name", String(255), nullable=False),
+    Column("key_prefix", String(16), nullable=False),  # first characters, to recognise a key
+    Column("key_hash", String(64), nullable=False),  # SHA-256 of the key; the key itself is never stored
+    Column("scopes", JSON, nullable=False),
+    Column("tenant", String(255)),
+    Column("allowed_tasks", JSON),  # NULL = every public task
+    Column("rate_limit_per_minute", Integer),
+    Column("created_at", UtcDateTime, nullable=False),
+    Column("last_used_at", UtcDateTime),
+    Column("revoked_at", UtcDateTime),
+    sqlite_autoincrement=True,
+)
+Index("uq_api_keys_hash", api_keys.c.key_hash, unique=True)
+Index("uq_api_keys_name", api_keys.c.name, unique=True)
+
+audit_log = Table(
+    "audit_log",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("at", UtcDateTime, nullable=False),
+    Column("actor", String(255), nullable=False),  # API key name
+    Column("tenant", String(255)),
+    Column("action", String(64), nullable=False),  # e.g. job.submit, schedule.delete
+    Column("resource_type", String(32)),
+    Column("resource_id", String(255)),
+    Column("details", JSON),
+    Column("client_ip", String(64)),
+    sqlite_autoincrement=True,
+)
+Index("idx_audit_at", audit_log.c.at)
+Index("idx_audit_actor", audit_log.c.actor, audit_log.c.at)
+
+#: Cluster-wide event counters (duplicates dropped, jobs recovered, …) for /metrics.
+event_counters = Table(
+    "event_counters",
+    metadata,
+    Column("name", String(64), primary_key=True),
+    Column("value", Integer, nullable=False, server_default="0"),
+)
 
 schedules = Table(
     "schedules",
@@ -177,14 +278,17 @@ schedules = Table(
     Column("version", Integer, nullable=False, server_default="0"),  # optimistic lock
     Column("idempotency_key", String(255)),
     Column("created_at", UtcDateTime, nullable=False),
+    Column("tenant", String(255)),  # 5.0
+    Column("timezone", String(64)),  # 5.0: IANA zone for cron_expr; NULL = UTC
     sqlite_autoincrement=True,
 )
 Index("idx_schedules_due", schedules.c.enabled, schedules.c.next_run_at)
+Index("idx_schedules_tenant", schedules.c.tenant)
 Index("uq_schedules_name", schedules.c.name, unique=True)
 Index("uq_schedules_idempotency_key", schedules.c.idempotency_key, unique=True)
 
 #: Schedule columns `update_schedule` may change (never caller-chosen SQL).
-_UPDATABLE_SCHEDULE_COLUMNS = frozenset({"enabled", "interval_seconds", "cron_expr", "next_run_at"})
+_UPDATABLE_SCHEDULE_COLUMNS = frozenset({"enabled", "interval_seconds", "cron_expr", "next_run_at", "timezone"})
 
 
 # ---------------------------------------------------------------------------
@@ -327,13 +431,26 @@ async def create_job(
     schedule_id: Optional[int] = None,
     idempotency_key: Optional[str] = None,
     conn: Optional[AsyncConnection] = None,
+    *,
+    tenant: Optional[str] = None,
+    priority: Optional[int] = None,
+    run_after: Optional[datetime] = None,
+    timeout_seconds: Optional[int] = None,
+    max_retries: Optional[int] = None,
+    callback_url: Optional[str] = None,
+    workflow_id: Optional[str] = None,
+    workflow_step: Optional[str] = None,
+    depends_on: Optional[list[str]] = None,
 ) -> bool:
     """
-    Insert a QUEUED, not-yet-published job. Returns False — inserting
-    nothing — if `idempotency_key` (or `task_id`) already exists.
+    Insert a not-yet-published job: QUEUED, or WAITING for a workflow step
+    that depends on other steps. Returns False — inserting nothing — if
+    `idempotency_key` (or `task_id`) already exists.
 
     Always call this BEFORE publishing; `published_at` stays NULL until
     `mark_published`, so the outbox relay can finish a publish that crashed.
+    A job with `run_after` in the future is left for the relay to publish
+    when it becomes due.
     """
     statement = (
         _insert(jobs)
@@ -343,11 +460,20 @@ async def create_job(
             args=list(args),
             kwargs=dict(kwargs),
             queue=queue,
-            status="QUEUED",
+            status=WAITING if depends_on else "QUEUED",
             retry_of=retry_of,
             schedule_id=schedule_id,
             idempotency_key=idempotency_key,
             submitted_at=utcnow(),
+            tenant=tenant,
+            priority=priority,
+            run_after=run_after,
+            timeout_seconds=timeout_seconds,
+            max_retries=max_retries,
+            callback_url=callback_url,
+            workflow_id=workflow_id,
+            workflow_step=workflow_step,
+            depends_on=list(depends_on) if depends_on else None,
         )
         .on_conflict_do_nothing()
         .returning(jobs.c.task_id)  # rowcount isn't reliable for ON CONFLICT on every driver
@@ -367,9 +493,14 @@ async def mark_published(task_id: str) -> None:
 
 async def claim_unpublished_jobs(older_than_seconds: int, limit: int = 100) -> list[dict]:
     """
-    Outbox relay: return jobs that were recorded but never published and
-    are older than `older_than_seconds`, claiming each so concurrent relays
-    (one per scheduler replica) don't publish the same job at the same time.
+    Outbox relay: return jobs that were recorded but never published, and
+    claim each so concurrent relays (one per scheduler replica) don't publish
+    the same job at the same time. A job qualifies when either:
+
+      * it has no `run_after` and is older than `older_than_seconds` (its
+        publisher crashed, or the broker was down), or
+      * its `run_after` has arrived (a delayed job, or a workflow step whose
+        dependencies just succeeded) — published straight away.
     """
     now = utcnow()
     cutoff = now - timedelta(seconds=older_than_seconds)
@@ -381,10 +512,13 @@ async def claim_unpublished_jobs(older_than_seconds: int, limit: int = 100) -> l
                     .where(
                         jobs.c.published_at.is_(None),
                         jobs.c.status == "QUEUED",
-                        jobs.c.submitted_at < cutoff,
+                        or_(
+                            jobs.c.run_after.is_(None) & (jobs.c.submitted_at < cutoff),
+                            jobs.c.run_after <= now,
+                        ),
                         or_(jobs.c.publish_attempted_at.is_(None), jobs.c.publish_attempted_at < cutoff),
                     )
-                    .order_by(jobs.c.submitted_at)
+                    .order_by(func.coalesce(jobs.c.run_after, jobs.c.submitted_at))
                     .limit(limit)
                 )
             )
@@ -426,8 +560,13 @@ async def update_job_status(
     `attempt` is a fencing token: when given, the update applies only if the
     job's `attempts` still equals it. A worker that lost its lease (and was
     replaced by another) therefore cannot overwrite the newer attempt's state.
-    Returns False if nothing was updated.
+
+    A final state (SUCCESS, FAILURE, REVOKED) is written only once: a job that
+    has already finished keeps its first final state. In the same transaction
+    the job's webhook (if any) is queued and its workflow (if any) advanced,
+    so neither can be lost or happen twice. Returns False if nothing was updated.
     """
+    now = utcnow()
     values: dict[str, Any] = {"status": status}
     for column, value in (
         ("result", result),
@@ -439,14 +578,64 @@ async def update_job_status(
         if value is not None:
             values[column] = value
     if finished:
-        values["finished_at"] = utcnow()
+        values["finished_at"] = now
         values["lease_expires_at"] = None
 
+    terminal = finished and status in TERMINAL_STATES
     statement = update(jobs).where(jobs.c.task_id == task_id).values(**values)
     if attempt is not None:
         statement = statement.where(jobs.c.attempts == attempt)
+    if terminal:
+        statement = statement.where(jobs.c.status.not_in(TERMINAL_STATES))
+    statement = statement.returning(*jobs.c)
     async with engine().begin() as conn:
-        return (await conn.execute(statement)).rowcount == 1
+        row = _row(await conn.execute(statement))
+        if row is None:
+            return False
+        if terminal:
+            await _on_job_finished(conn, row, now)
+        return True
+
+
+def job_event_payload(job: dict) -> dict:
+    """The JSON body of a `job.finished` webhook."""
+    return {
+        "event": "job.finished",
+        "task_id": job["task_id"],
+        "task_name": job["task_name"],
+        "status": job["status"],
+        "result": job["result"],
+        "error": job["error"],
+        "attempts": job["attempts"],
+        "retries": job["retries"],
+        "submitted_at": job["submitted_at"].isoformat() if job["submitted_at"] else None,
+        "finished_at": job["finished_at"].isoformat() if job["finished_at"] else None,
+        "workflow_id": job["workflow_id"],
+        "workflow_step": job["workflow_step"],
+        "schedule_id": job["schedule_id"],
+    }
+
+
+async def _on_job_finished(conn: AsyncConnection, job: dict, now: datetime) -> None:
+    """Side effects of a job reaching a final state, inside its status transaction."""
+    if job["callback_url"]:
+        await _queue_webhook(conn, "job.finished", job["task_id"], job["callback_url"], job_event_payload(job), now)
+    if job["workflow_id"]:
+        await _advance_workflow(conn, job, now)
+
+
+async def _queue_webhook(conn: AsyncConnection, event: str, subject_id: str, url: str, payload: dict, now) -> None:
+    await conn.execute(
+        webhook_deliveries.insert().values(
+            event=event,
+            subject_id=subject_id,
+            url=url,
+            payload=payload,
+            status="PENDING",
+            next_attempt_at=now,
+            created_at=now,
+        )
+    )
 
 
 async def get_job(task_id: str) -> Optional[dict]:
@@ -459,28 +648,651 @@ async def get_job_by_idempotency_key(key: str) -> Optional[dict]:
         return _row(await conn.execute(select(jobs).where(jobs.c.idempotency_key == key)))
 
 
-async def list_jobs(limit: int = 50, offset: int = 0, status: Optional[str] = None) -> list[dict]:
-    """A page of jobs, newest first, optionally only those with `status`."""
+def _job_filters(query, status=None, tenant=None, task_name=None, workflow_id=None):
+    for column, value in (
+        (jobs.c.status, status),
+        (jobs.c.tenant, tenant),
+        (jobs.c.task_name, task_name),
+        (jobs.c.workflow_id, workflow_id),
+    ):
+        if value is not None:
+            query = query.where(column == value)
+    return query
+
+
+async def list_jobs(
+    limit: int = 50,
+    offset: int = 0,
+    status: Optional[str] = None,
+    tenant: Optional[str] = None,
+    task_name: Optional[str] = None,
+    workflow_id: Optional[str] = None,
+) -> list[dict]:
+    """A page of jobs, newest first, optionally filtered. `tenant=None` means every tenant."""
     query = select(jobs).order_by(jobs.c.submitted_at.desc()).limit(limit).offset(offset)
-    if status:
-        query = query.where(jobs.c.status == status)
+    query = _job_filters(query, status or None, tenant, task_name, workflow_id)
     async with engine().connect() as conn:
         return [dict(row) for row in (await conn.execute(query)).mappings()]
 
 
-async def count_jobs(status: Optional[str] = None) -> int:
-    query = select(func.count()).select_from(jobs)
-    if status:
-        query = query.where(jobs.c.status == status)
+async def count_jobs(
+    status: Optional[str] = None,
+    tenant: Optional[str] = None,
+    task_name: Optional[str] = None,
+    workflow_id: Optional[str] = None,
+) -> int:
+    query = _job_filters(select(func.count()).select_from(jobs), status or None, tenant, task_name, workflow_id)
     async with engine().connect() as conn:
         return (await conn.execute(query)).scalar_one()
 
 
 async def delete_finished_jobs_before(cutoff: datetime) -> int:
-    """Delete jobs that finished before `cutoff`; return how many were removed."""
+    """Delete jobs (and their finished webhooks and workflows) that finished before `cutoff`."""
     async with engine().begin() as conn:
         result = await conn.execute(jobs.delete().where(jobs.c.finished_at.is_not(None), jobs.c.finished_at < cutoff))
+        await conn.execute(
+            webhook_deliveries.delete().where(
+                webhook_deliveries.c.status != "PENDING", webhook_deliveries.c.created_at < cutoff
+            )
+        )
+        await conn.execute(
+            workflows.delete().where(workflows.c.finished_at.is_not(None), workflows.c.finished_at < cutoff)
+        )
         return result.rowcount
+
+
+async def failure_groups(tenant: Optional[str] = None, limit: int = 50) -> list[dict]:
+    """
+    Dead-letter view: FAILURE jobs not yet re-submitted, grouped by task and
+    error, biggest group first.
+    """
+    retried = select(jobs.c.retry_of).where(jobs.c.retry_of.is_not(None)).scalar_subquery()
+    query = (
+        select(
+            jobs.c.task_name,
+            jobs.c.error,
+            func.count().label("count"),
+            func.min(jobs.c.finished_at).label("first_failed_at"),
+            func.max(jobs.c.finished_at).label("last_failed_at"),
+            func.max(jobs.c.task_id).label("example_task_id"),
+        )
+        .where(jobs.c.status == states.FAILURE, jobs.c.task_id.not_in(retried))
+        .group_by(jobs.c.task_name, jobs.c.error)
+        .order_by(func.count().desc(), func.max(jobs.c.finished_at).desc())
+        .limit(limit)
+    )
+    if tenant is not None:
+        query = query.where(jobs.c.tenant == tenant)
+    async with engine().connect() as conn:
+        return [dict(row) for row in (await conn.execute(query)).mappings()]
+
+
+async def failed_jobs_to_retry(
+    tenant: Optional[str] = None,
+    task_name: Optional[str] = None,
+    error: Optional[str] = None,
+    limit: int = 100,
+) -> list[dict]:
+    """FAILURE jobs that haven't been re-submitted yet, oldest first, optionally filtered."""
+    retried = select(jobs.c.retry_of).where(jobs.c.retry_of.is_not(None)).scalar_subquery()
+    query = (
+        select(jobs)
+        .where(jobs.c.status == states.FAILURE, jobs.c.task_id.not_in(retried))
+        .order_by(jobs.c.finished_at)
+        .limit(limit)
+    )
+    for column, value in ((jobs.c.tenant, tenant), (jobs.c.task_name, task_name), (jobs.c.error, error)):
+        if value is not None:
+            query = query.where(column == value)
+    async with engine().connect() as conn:
+        return [dict(row) for row in (await conn.execute(query)).mappings()]
+
+
+# ---------------------------------------------------------------------------
+# Workflows: jobs that run after other jobs succeed (fan-out / fan-in)
+# ---------------------------------------------------------------------------
+async def create_workflow(
+    workflow_id: str,
+    name: Optional[str],
+    steps: list[dict],
+    tenant: Optional[str] = None,
+    callback_url: Optional[str] = None,
+    idempotency_key: Optional[str] = None,
+) -> bool:
+    """
+    Record a workflow and one job per step, in one transaction. Steps with no
+    dependencies are QUEUED (the caller publishes them); the rest are WAITING
+    until `_advance_workflow` releases them. Returns False if
+    `idempotency_key` already exists.
+
+    Each step dict has: task_id, step, task_name, args, kwargs, queue,
+    depends_on, and optionally priority, timeout_seconds, max_retries, callback_url.
+    """
+    async with engine().begin() as conn:
+        inserted = await conn.execute(
+            _insert(workflows)
+            .values(
+                id=workflow_id,
+                name=name,
+                tenant=tenant,
+                status="RUNNING",
+                callback_url=callback_url,
+                idempotency_key=idempotency_key,
+                created_at=utcnow(),
+            )
+            .on_conflict_do_nothing()
+            .returning(workflows.c.id)
+        )
+        if inserted.scalar_one_or_none() is None:
+            return False
+        for step in steps:
+            await create_job(
+                step["task_id"],
+                step["task_name"],
+                step["args"],
+                step["kwargs"],
+                queue=step["queue"],
+                conn=conn,
+                tenant=tenant,
+                priority=step.get("priority"),
+                timeout_seconds=step.get("timeout_seconds"),
+                max_retries=step.get("max_retries"),
+                callback_url=step.get("callback_url"),
+                workflow_id=workflow_id,
+                workflow_step=step["step"],
+                depends_on=step["depends_on"],
+            )
+    return True
+
+
+async def get_workflow(workflow_id: str) -> Optional[dict]:
+    """The workflow row plus `steps`: its jobs, in creation order."""
+    async with engine().connect() as conn:
+        workflow = _row(await conn.execute(select(workflows).where(workflows.c.id == workflow_id)))
+        if workflow is None:
+            return None
+        steps = await conn.execute(
+            select(jobs).where(jobs.c.workflow_id == workflow_id).order_by(jobs.c.submitted_at, jobs.c.task_id)
+        )
+        workflow["steps"] = [dict(row) for row in steps.mappings()]
+    return workflow
+
+
+async def get_workflow_by_idempotency_key(key: str) -> Optional[dict]:
+    async with engine().connect() as conn:
+        row = _row(await conn.execute(select(workflows.c.id).where(workflows.c.idempotency_key == key)))
+    return await get_workflow(row["id"]) if row else None
+
+
+async def list_workflows(limit: int = 50, offset: int = 0, tenant: Optional[str] = None) -> list[dict]:
+    query = select(workflows).order_by(workflows.c.created_at.desc()).limit(limit).offset(offset)
+    if tenant is not None:
+        query = query.where(workflows.c.tenant == tenant)
+    async with engine().connect() as conn:
+        return [dict(row) for row in (await conn.execute(query)).mappings()]
+
+
+async def skip_waiting_steps(workflow_id: str, reason: str) -> int:
+    """Cancel every WAITING step of a workflow (they were never published). Returns how many."""
+    now = utcnow()
+    async with engine().begin() as conn:
+        # Lock the workflow first, the same order `_advance_workflow` uses.
+        await conn.execute(select(workflows.c.id).where(workflows.c.id == workflow_id).with_for_update())
+        waiting = (
+            await conn.execute(
+                update(jobs)
+                .where(jobs.c.workflow_id == workflow_id, jobs.c.status == WAITING)
+                .values(status=states.REVOKED, error=reason, finished_at=now)
+                .returning(*jobs.c)
+            )
+        ).mappings()
+        skipped = [dict(row) for row in waiting]
+        for job in skipped:
+            if job["callback_url"]:
+                await _queue_webhook(
+                    conn, "job.finished", job["task_id"], job["callback_url"], job_event_payload(job), now
+                )
+        if skipped:
+            await _finish_workflow_if_done(conn, workflow_id, now)
+    return len(skipped)
+
+
+async def cancel_waiting_step(task_id: str) -> bool:
+    """
+    Cancel one WAITING workflow step and skip the steps downstream of it.
+    The workflow is locked first, the same order `_advance_workflow` uses,
+    so this can't deadlock with a step finishing at the same moment.
+    """
+    now = utcnow()
+    async with engine().begin() as conn:
+        workflow_id = (
+            await conn.execute(select(jobs.c.workflow_id).where(jobs.c.task_id == task_id))
+        ).scalar_one_or_none()
+        if workflow_id is None:
+            return False
+        await conn.execute(select(workflows.c.id).where(workflows.c.id == workflow_id).with_for_update())
+        job = _row(
+            await conn.execute(
+                update(jobs)
+                .where(jobs.c.task_id == task_id, jobs.c.status == WAITING)
+                .values(status=states.REVOKED, error="Cancelled", finished_at=now)
+                .returning(*jobs.c)
+            )
+        )
+        if job is None:
+            return False
+        await _on_job_finished(conn, job, now)
+    return True
+
+
+async def _advance_workflow(conn: AsyncConnection, job: dict, now: datetime) -> None:
+    """
+    After a step finishes: release dependents whose dependencies have all
+    succeeded, or skip (REVOKE) everything downstream of a step that failed or
+    was cancelled; then close the workflow once every step has finished.
+
+    The workflow row is locked first, so steps finishing at the same moment
+    are processed one at a time. Each therefore sees the others' committed
+    results, and a step that depends on several (fan-in) is released exactly once.
+    """
+    locked = await conn.execute(select(workflows.c.id).where(workflows.c.id == job["workflow_id"]).with_for_update())
+    if locked.scalar_one_or_none() is None:
+        return
+    rows = await conn.execute(select(jobs).where(jobs.c.workflow_id == job["workflow_id"]))
+    steps = [dict(row) for row in rows.mappings()]
+    by_step = {step["workflow_step"]: step for step in steps}
+
+    if job["status"] == states.SUCCESS:
+        for step in steps:
+            depends_on = step["depends_on"] or []
+            if (
+                step["status"] == WAITING
+                and job["workflow_step"] in depends_on
+                and all(by_step[dep]["status"] == states.SUCCESS for dep in depends_on)
+            ):
+                # run_after = now: the outbox relay publishes it on its next pass.
+                await conn.execute(
+                    update(jobs)
+                    .where(jobs.c.task_id == step["task_id"], jobs.c.status == WAITING)
+                    .values(status="QUEUED", run_after=now)
+                )
+                step["status"] = "QUEUED"
+    else:
+        ended = {job["workflow_step"]}
+        changed = True
+        while changed:  # walk downstream until nothing new is skipped
+            changed = False
+            for step in steps:
+                blocked_by = sorted(set(step["depends_on"] or []) & ended)
+                if step["status"] != WAITING or not blocked_by:
+                    continue
+                step.update(
+                    status=states.REVOKED,
+                    error=f"Skipped: upstream step(s) {blocked_by} did not succeed",
+                    finished_at=now,
+                )
+                await conn.execute(
+                    update(jobs)
+                    .where(jobs.c.task_id == step["task_id"], jobs.c.status == WAITING)
+                    .values(status=states.REVOKED, error=step["error"], finished_at=now)
+                )
+                if step["callback_url"]:
+                    payload = job_event_payload(step)
+                    await _queue_webhook(conn, "job.finished", step["task_id"], step["callback_url"], payload, now)
+                ended.add(step["workflow_step"])
+                changed = True
+
+    await _finish_workflow_if_done(conn, job["workflow_id"], now, steps)
+
+
+async def _finish_workflow_if_done(
+    conn: AsyncConnection, workflow_id: str, now: datetime, steps: Optional[list[dict]] = None
+) -> None:
+    if steps is None:
+        steps = [
+            dict(r) for r in (await conn.execute(select(jobs).where(jobs.c.workflow_id == workflow_id))).mappings()
+        ]
+    if not steps or any(step["status"] not in TERMINAL_STATES for step in steps):
+        return
+    statuses = {step["status"] for step in steps}
+    final = (
+        states.SUCCESS
+        if statuses == {states.SUCCESS}
+        else states.FAILURE
+        if states.FAILURE in statuses
+        else states.REVOKED
+    )
+    closed = await conn.execute(
+        update(workflows)
+        .where(workflows.c.id == workflow_id, workflows.c.finished_at.is_(None))
+        .values(status=final, finished_at=now)
+        .returning(*workflows.c)
+    )
+    workflow = _row(closed)
+    if workflow and workflow["callback_url"]:
+        payload = {
+            "event": "workflow.finished",
+            "workflow_id": workflow_id,
+            "name": workflow["name"],
+            "status": final,
+            "steps": {step["workflow_step"]: step["status"] for step in steps},
+            "finished_at": now.isoformat(),
+        }
+        await _queue_webhook(conn, "workflow.finished", workflow_id, workflow["callback_url"], payload, now)
+
+
+# ---------------------------------------------------------------------------
+# Webhook deliveries (sent by the scheduler service; see app/webhooks.py)
+# ---------------------------------------------------------------------------
+async def claim_due_webhooks(lease_seconds: int, limit: int = 50) -> list[dict]:
+    """
+    Claim PENDING deliveries that are due. The claim pushes `next_attempt_at`
+    forward by `lease_seconds` with an optimistic version check, so with many
+    scheduler replicas each delivery is attempted by one of them at a time.
+    """
+    now = utcnow()
+    async with engine().connect() as conn:
+        candidates = (
+            (
+                await conn.execute(
+                    select(webhook_deliveries)
+                    .where(webhook_deliveries.c.status == "PENDING", webhook_deliveries.c.next_attempt_at <= now)
+                    .order_by(webhook_deliveries.c.next_attempt_at)
+                    .limit(limit)
+                )
+            )
+            .mappings()
+            .all()
+        )
+    claimed = []
+    for delivery in candidates:
+        async with engine().begin() as conn:
+            result = await conn.execute(
+                update(webhook_deliveries)
+                .where(
+                    webhook_deliveries.c.id == delivery["id"],
+                    webhook_deliveries.c.version == delivery["version"],
+                    webhook_deliveries.c.status == "PENDING",
+                )
+                .values(next_attempt_at=now + timedelta(seconds=lease_seconds), version=delivery["version"] + 1)
+            )
+        if result.rowcount == 1:
+            claimed.append({**dict(delivery), "version": delivery["version"] + 1})
+    return claimed
+
+
+async def record_webhook_attempt(
+    delivery: dict,
+    delivered: bool,
+    status_code: Optional[int],
+    error: Optional[str],
+    retry_at: Optional[datetime],
+) -> bool:
+    """Store one attempt's outcome. `retry_at=None` with `delivered=False` means give up (FAILED)."""
+    now = utcnow()
+    values: dict[str, Any] = {
+        "attempts": webhook_deliveries.c.attempts + 1,
+        "last_status_code": status_code,
+        "last_error": error,
+        "version": webhook_deliveries.c.version + 1,
+    }
+    if delivered:
+        values.update(status="DELIVERED", delivered_at=now)
+    elif retry_at is None:
+        values.update(status="FAILED")
+    else:
+        values.update(next_attempt_at=retry_at)
+    async with engine().begin() as conn:
+        result = await conn.execute(
+            update(webhook_deliveries)
+            .where(webhook_deliveries.c.id == delivery["id"], webhook_deliveries.c.version == delivery["version"])
+            .values(**values)
+        )
+        return result.rowcount == 1
+
+
+async def list_webhook_deliveries(subject_id: str) -> list[dict]:
+    async with engine().connect() as conn:
+        result = await conn.execute(
+            select(webhook_deliveries)
+            .where(webhook_deliveries.c.subject_id == subject_id)
+            .order_by(webhook_deliveries.c.id)
+        )
+        return [dict(row) for row in result.mappings()]
+
+
+# ---------------------------------------------------------------------------
+# Managed API keys and the audit log
+# ---------------------------------------------------------------------------
+async def create_api_key(
+    name: str,
+    key_hash: str,
+    key_prefix: str,
+    scopes: list[str],
+    tenant: Optional[str],
+    allowed_tasks: Optional[list[str]],
+    rate_limit_per_minute: Optional[int],
+) -> Optional[int]:
+    """Insert a key and return its id, or None if `name` is taken."""
+    async with engine().begin() as conn:
+        result = await conn.execute(
+            _insert(api_keys)
+            .values(
+                name=name,
+                key_hash=key_hash,
+                key_prefix=key_prefix,
+                scopes=list(scopes),
+                tenant=tenant,
+                allowed_tasks=list(allowed_tasks) if allowed_tasks is not None else None,
+                rate_limit_per_minute=rate_limit_per_minute,
+                created_at=utcnow(),
+            )
+            .on_conflict_do_nothing()
+            .returning(api_keys.c.id)
+        )
+        return result.scalar_one_or_none()
+
+
+async def get_active_api_key(key_hash: str) -> Optional[dict]:
+    async with engine().connect() as conn:
+        return _row(
+            await conn.execute(select(api_keys).where(api_keys.c.key_hash == key_hash, api_keys.c.revoked_at.is_(None)))
+        )
+
+
+async def get_api_key(key_id: int) -> Optional[dict]:
+    async with engine().connect() as conn:
+        return _row(await conn.execute(select(api_keys).where(api_keys.c.id == key_id)))
+
+
+async def list_api_keys() -> list[dict]:
+    async with engine().connect() as conn:
+        return [dict(row) for row in (await conn.execute(select(api_keys).order_by(api_keys.c.id))).mappings()]
+
+
+async def revoke_api_key(key_id: int) -> bool:
+    async with engine().begin() as conn:
+        result = await conn.execute(
+            update(api_keys).where(api_keys.c.id == key_id, api_keys.c.revoked_at.is_(None)).values(revoked_at=utcnow())
+        )
+        return result.rowcount == 1
+
+
+async def touch_api_key(key_id: int) -> None:
+    async with engine().begin() as conn:
+        await conn.execute(update(api_keys).where(api_keys.c.id == key_id).values(last_used_at=utcnow()))
+
+
+async def add_audit_entry(
+    actor: str,
+    action: str,
+    tenant: Optional[str] = None,
+    resource_type: Optional[str] = None,
+    resource_id: Optional[str] = None,
+    details: Optional[dict] = None,
+    client_ip: Optional[str] = None,
+) -> None:
+    async with engine().begin() as conn:
+        await conn.execute(
+            audit_log.insert().values(
+                at=utcnow(),
+                actor=actor,
+                tenant=tenant,
+                action=action,
+                resource_type=resource_type,
+                resource_id=resource_id,
+                details=details,
+                client_ip=client_ip,
+            )
+        )
+
+
+async def list_audit_entries(
+    limit: int = 50,
+    offset: int = 0,
+    actor: Optional[str] = None,
+    action: Optional[str] = None,
+    tenant: Optional[str] = None,
+) -> list[dict]:
+    query = select(audit_log).order_by(audit_log.c.id.desc()).limit(limit).offset(offset)
+    for column, value in ((audit_log.c.actor, actor), (audit_log.c.action, action), (audit_log.c.tenant, tenant)):
+        if value is not None:
+            query = query.where(column == value)
+    async with engine().connect() as conn:
+        return [dict(row) for row in (await conn.execute(query)).mappings()]
+
+
+async def delete_audit_entries_before(cutoff: datetime) -> int:
+    async with engine().begin() as conn:
+        return (await conn.execute(audit_log.delete().where(audit_log.c.at < cutoff))).rowcount
+
+
+# ---------------------------------------------------------------------------
+# Metrics
+# ---------------------------------------------------------------------------
+async def increment_counter(name: str, by: int = 1) -> None:
+    """Add `by` to a cluster-wide event counter (shown in /metrics as jobscheduler_events_total)."""
+    statement = _insert(event_counters).values(name=name, value=by)
+    statement = statement.on_conflict_do_update(
+        index_elements=[event_counters.c.name], set_={"value": event_counters.c.value + by}
+    )
+    async with engine().begin() as conn:
+        await conn.execute(statement)
+
+
+async def metrics_snapshot(window_seconds: int) -> dict:
+    """
+    Everything /metrics reports, read in one connection. "Recent" values
+    cover the last `window_seconds`.
+    """
+    now = utcnow()
+    since = now - timedelta(seconds=window_seconds)
+    snapshot: dict[str, Any] = {}
+    async with engine().connect() as conn:
+        snapshot["jobs"] = [
+            dict(row)
+            for row in (
+                await conn.execute(
+                    select(jobs.c.status, jobs.c.queue, jobs.c.task_name, func.count().label("count")).group_by(
+                        jobs.c.status, jobs.c.queue, jobs.c.task_name
+                    )
+                )
+            ).mappings()
+        ]
+        snapshot["finished_recent"] = [
+            dict(row)
+            for row in (
+                await conn.execute(
+                    select(jobs.c.task_name, jobs.c.status, func.count().label("count"))
+                    .where(jobs.c.finished_at >= since)
+                    .group_by(jobs.c.task_name, jobs.c.status)
+                )
+            ).mappings()
+        ]
+        snapshot["timings_recent"] = [
+            dict(row)
+            for row in (
+                await conn.execute(
+                    select(
+                        jobs.c.task_name,
+                        jobs.c.queue,
+                        jobs.c.submitted_at,
+                        jobs.c.run_after,
+                        jobs.c.started_at,
+                        jobs.c.finished_at,
+                    )
+                    .where(jobs.c.finished_at >= since, jobs.c.started_at.is_not(None))
+                    .order_by(jobs.c.finished_at.desc())
+                    .limit(20_000)
+                )
+            ).mappings()
+        ]
+        snapshot["oldest_queued"] = [
+            dict(row)
+            for row in (
+                await conn.execute(
+                    select(
+                        jobs.c.queue,
+                        func.min(func.coalesce(jobs.c.run_after, jobs.c.submitted_at)).label("oldest"),
+                    )
+                    .where(jobs.c.status == "QUEUED", jobs.c.published_at.is_not(None))
+                    .group_by(jobs.c.queue)
+                )
+            ).mappings()
+        ]
+        outbox = (
+            await conn.execute(
+                select(func.count(), func.min(jobs.c.submitted_at)).where(
+                    jobs.c.published_at.is_(None),
+                    jobs.c.status == "QUEUED",
+                    or_(jobs.c.run_after.is_(None), jobs.c.run_after <= now),
+                )
+            )
+        ).one()
+        snapshot["outbox_pending"], snapshot["outbox_oldest"] = outbox[0], outbox[1]
+        snapshot["delayed"] = (
+            await conn.execute(
+                select(func.count()).where(
+                    jobs.c.published_at.is_(None), jobs.c.status == "QUEUED", jobs.c.run_after > now
+                )
+            )
+        ).scalar_one()
+        snapshot["schedules"] = [
+            dict(row)
+            for row in (
+                await conn.execute(
+                    select(schedules.c.enabled, func.count().label("count")).group_by(schedules.c.enabled)
+                )
+            ).mappings()
+        ]
+        snapshot["most_overdue_schedule"] = (
+            await conn.execute(
+                select(func.min(schedules.c.next_run_at)).where(
+                    schedules.c.enabled.is_(True), schedules.c.next_run_at <= now
+                )
+            )
+        ).scalar_one()
+        snapshot["webhooks"] = [
+            dict(row)
+            for row in (
+                await conn.execute(
+                    select(webhook_deliveries.c.status, func.count().label("count")).group_by(
+                        webhook_deliveries.c.status
+                    )
+                )
+            ).mappings()
+        ]
+        snapshot["workflows"] = [
+            dict(row)
+            for row in (
+                await conn.execute(select(workflows.c.status, func.count().label("count")).group_by(workflows.c.status))
+            ).mappings()
+        ]
+        snapshot["counters"] = {
+            row["name"]: row["value"] for row in (await conn.execute(select(event_counters))).mappings()
+        }
+    snapshot["now"] = now
+    return snapshot
 
 
 # ---------------------------------------------------------------------------
@@ -490,6 +1302,7 @@ async def delete_finished_jobs_before(cutoff: datetime) -> int:
 class ExecutionClaim:
     acquired: bool
     attempt: Optional[int] = None  # fencing token, when acquired
+    max_retries: Optional[int] = None  # per-job retry limit override, when acquired
     status: Optional[str] = None  # current status, when not acquired
     lease_expires_at: Optional[datetime] = None  # holder's lease, when not acquired
 
@@ -539,11 +1352,11 @@ async def acquire_execution(
                 lease_expires_at=now + timedelta(seconds=lease_seconds),
                 published_at=func.coalesce(jobs.c.published_at, now),
             )
-            .returning(jobs.c.attempts)
+            .returning(jobs.c.attempts, jobs.c.max_retries)
         )
-        attempt = result.scalar_one_or_none()
-        if attempt is not None:
-            return ExecutionClaim(acquired=True, attempt=attempt)
+        won = result.first()
+        if won is not None:
+            return ExecutionClaim(acquired=True, attempt=won.attempts, max_retries=won.max_retries)
         current = _row(
             await conn.execute(select(jobs.c.status, jobs.c.lease_expires_at).where(jobs.c.task_id == task_id))
         )
@@ -618,6 +1431,8 @@ async def create_schedule(
     interval_seconds: Optional[int] = None,
     cron_expr: Optional[str] = None,
     idempotency_key: Optional[str] = None,
+    tenant: Optional[str] = None,
+    timezone_name: Optional[str] = None,
 ) -> Optional[int]:
     """Insert an enabled schedule and return its id, or None if `idempotency_key` already exists."""
     async with engine().begin() as conn:
@@ -635,6 +1450,8 @@ async def create_schedule(
                 next_run_at=next_run_at,
                 idempotency_key=idempotency_key,
                 created_at=utcnow(),
+                tenant=tenant,
+                timezone=timezone_name,
             )
             .on_conflict_do_nothing()
             .returning(schedules.c.id)
@@ -691,13 +1508,24 @@ async def get_schedule_by_idempotency_key(key: str) -> Optional[dict]:
         return _row(await conn.execute(select(schedules).where(schedules.c.idempotency_key == key)))
 
 
-async def list_schedules(limit: int = 50, offset: int = 0, enabled_only: bool = False) -> list[dict]:
-    """A page of schedules, newest first."""
+async def list_schedules(
+    limit: int = 50, offset: int = 0, enabled_only: bool = False, tenant: Optional[str] = None
+) -> list[dict]:
+    """A page of schedules, newest first. `tenant=None` means every tenant."""
     query = select(schedules).order_by(schedules.c.created_at.desc(), schedules.c.id.desc()).limit(limit).offset(offset)
     if enabled_only:
         query = query.where(schedules.c.enabled.is_(True))
+    if tenant is not None:
+        query = query.where(schedules.c.tenant == tenant)
     async with engine().connect() as conn:
         return [dict(row) for row in (await conn.execute(query)).mappings()]
+
+
+async def count_active_schedules(tenant: str) -> int:
+    async with engine().connect() as conn:
+        return (
+            await conn.execute(select(func.count()).where(schedules.c.tenant == tenant, schedules.c.enabled.is_(True)))
+        ).scalar_one()
 
 
 async def get_due_schedules(now: datetime, limit: int = 100) -> list[dict]:
@@ -759,6 +1587,7 @@ async def fire_schedule(
             queue=queue,
             schedule_id=schedule["id"],
             conn=conn,
+            tenant=schedule.get("tenant"),
         )
     return task_id
 

@@ -1,0 +1,421 @@
+# Default values for the job-scheduler chart.
+# The defaults reproduce deploy/k8s (kustomize) as closely as Helm allows.
+# Postgres and Redis are NOT deployed: point `secrets` at managed services.
+
+nameOverride: ""
+fullnameOverride: ""
+
+image:
+  repository: job-scheduler # e.g. ghcr.io/acme/job-scheduler
+  tag: "" # defaults to the chart appVersion
+  digest: "" # sha256:... ; when set it wins over tag
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+#  - name: regcred
+
+serviceAccount:
+  create: true
+  name: "" # defaults to the release fullname
+  annotations: {}
+  # The app never talks to the Kubernetes API, so it gets no token.
+  automountServiceAccountToken: false
+
+# Labels and annotations added to every resource.
+commonLabels: {}
+commonAnnotations: {}
+
+# ---------------------------------------------------------------------------
+# Settings
+# ---------------------------------------------------------------------------
+
+# Non-secret settings, rendered into the ConfigMap shared by every pod.
+# Full list: .env.example / app/config.py. Values are quoted as strings.
+# AUTO_MIGRATE is always "false" (the migrate init container does it) and
+# cannot be set here.
+config:
+  LOG_FORMAT: json
+  LOG_LEVEL: INFO
+  LOG_TO_FILE: "false"
+  FIFO_ENABLED: "true"
+  DEFAULT_QUEUE_NAME: default
+  LONG_TASK_QUEUE_NAME: long
+  SCHEDULE_POLL_INTERVAL_SECONDS: "5"
+  EXECUTION_LEASE_SECONDS: "60"
+  MAX_WORKER_LOSS_RECOVERIES: "3"
+  BROKER_VISIBILITY_TIMEOUT: "300"
+  OUTBOX_REPUBLISH_AFTER_SECONDS: "30"
+  JOB_RETENTION_DAYS: "30"
+  TASK_SOFT_TIME_LIMIT: "300"
+  TASK_TIME_LIMIT: "360"
+  DB_POOL_SIZE: "5"
+  DB_MAX_OVERFLOW: "5"
+
+# Extra environment variables for every container (including migrate).
+# Standard Kubernetes EnvVar objects, so valueFrom works too.
+extraEnv: []
+#  - name: REDIS_SENTINEL_MASTER
+#    value: mymaster
+
+secrets:
+  # Name of a Secret you manage yourself (External Secrets, Sealed Secrets,
+  # Vault, kubectl create secret ...). When set, the chart creates no Secret
+  # and the values below are ignored.
+  existingSecret: ""
+  # Otherwise the chart creates "<fullname>-secrets" from these. Empty
+  # values are left out. Prefer existingSecret in production: values here
+  # end up in the Helm release record.
+  values:
+    API_KEYS: "" # comma-separated; two allow zero-downtime rotation
+    DATABASE_URL: "" # postgresql://user:pass@host:5432/db?sslmode=require
+    CELERY_BROKER_URL: "" # rediss://:pass@host:6379/0 (wins over REDIS_PASSWORD)
+    REDIS_PASSWORD: "" # used with config.REDIS_HOST / REDIS_PORT
+    FLOWER_BASIC_AUTH: "" # user:password
+    WEBHOOK_SIGNING_SECRET: "" # used by app versions with signed webhooks
+
+# ---------------------------------------------------------------------------
+# Pod defaults (each component can override them)
+# ---------------------------------------------------------------------------
+
+# Restricted Pod Security Standard.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
+  fsGroup: 1000
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+
+# Spread each component's pods across nodes and zones. Turned into
+# topologySpreadConstraints (one per key) for components with
+# `topologySpread: true`. A component's own `topologySpreadConstraints`
+# list replaces the generated ones.
+topologySpread:
+  maxSkew: 1
+  whenUnsatisfiable: ScheduleAnyway
+  topologyKeys:
+    - kubernetes.io/hostname
+    - topology.kubernetes.io/zone
+
+podAnnotations: {}
+podLabels: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}
+priorityClassName: ""
+
+# Extra volumes / mounts for every pod (a writable /tmp is always mounted).
+extraVolumes: []
+extraVolumeMounts: []
+
+# The migrate init container (`python -m app.migrate`) runs in every pod
+# except Flower, before the app container starts. It is idempotent and
+# lock-protected, so many pods can run it at once.
+migrate:
+  resources:
+    requests: { cpu: 50m, memory: 128Mi }
+    limits: { memory: 256Mi }
+
+# ---------------------------------------------------------------------------
+# Components
+# ---------------------------------------------------------------------------
+# Common keys for every component:
+#   enabled, replicaCount, revisionHistoryLimit, strategy, command, args,
+#   extraEnv, resources, startupProbe, livenessProbe, readinessProbe,
+#   lifecycle, terminationGracePeriodSeconds, topologySpread,
+#   topologySpreadConstraints, podSecurityContext, podAnnotations, podLabels,
+#   nodeSelector, tolerations, affinity, hpa, pdb.
+# Empty per-component podSecurityContext / nodeSelector / tolerations /
+# affinity fall back to the pod defaults above.
+# When hpa.enabled is true, the Deployment leaves `replicas` to the HPA.
+
+api:
+  enabled: true
+  replicaCount: 3
+  revisionHistoryLimit: 5
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: { maxUnavailable: 0, maxSurge: 1 }
+  containerPort: 8000
+  command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2", "--proxy-headers", "--forwarded-allow-ips=*"]
+  args: []
+  extraEnv: []
+  resources:
+    requests: { cpu: 250m, memory: 256Mi }
+    limits: { memory: 512Mi }
+  startupProbe:
+    httpGet: { path: /health, port: http }
+    periodSeconds: 2
+    failureThreshold: 30
+  # Process is up (no dependency checks: a DB blip must not restart every pod).
+  livenessProbe:
+    httpGet: { path: /health, port: http }
+    periodSeconds: 10
+    failureThreshold: 3
+  # Out of the Service when it can't reach the DB or broker.
+  readinessProbe:
+    httpGet: { path: /health/ready, port: http }
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3
+  # Let the load balancer drop the pod before it stops.
+  lifecycle:
+    preStop:
+      sleep: { seconds: 5 }
+  terminationGracePeriodSeconds: 30
+  topologySpread: true
+  topologySpreadConstraints: []
+  podSecurityContext: {}
+  podAnnotations: {}
+  podLabels: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  service:
+    type: ClusterIP
+    port: 80
+    annotations: {}
+  hpa:
+    enabled: true
+    minReplicas: 3
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 70
+    behavior: {}
+  pdb:
+    enabled: true
+    minAvailable: 2
+
+worker:
+  enabled: true
+  replicaCount: 3
+  revisionHistoryLimit: 5
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: { maxUnavailable: 1, maxSurge: 1 }
+  command: ["celery", "-A", "app.celery_app", "worker", "-Q", "default", "--concurrency=4", "--loglevel=info"]
+  args: []
+  extraEnv: []
+  resources:
+    requests: { cpu: 500m, memory: 512Mi }
+    limits: { memory: 1Gi }
+  startupProbe: {}
+  livenessProbe:
+    exec:
+      command: ["sh", "-c", 'celery -A app.celery_app inspect ping -d "celery@$HOSTNAME" --timeout 10']
+    initialDelaySeconds: 30
+    periodSeconds: 60
+    timeoutSeconds: 20
+    failureThreshold: 3
+  readinessProbe: {}
+  lifecycle: {}
+  # > TASK_SOFT_TIME_LIMIT, so a warm shutdown can finish running tasks.
+  terminationGracePeriodSeconds: 330
+  topologySpread: true
+  topologySpreadConstraints: []
+  podSecurityContext: {}
+  podAnnotations: {}
+  podLabels: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  hpa:
+    enabled: true
+    minReplicas: 3
+    maxReplicas: 20
+    targetCPUUtilizationPercentage: 70
+    behavior:
+      scaleDown: { stabilizationWindowSeconds: 300 } # scale-in waits for running tasks
+  pdb:
+    enabled: true
+    maxUnavailable: 1
+
+workerLong:
+  enabled: true
+  replicaCount: 2
+  revisionHistoryLimit: 5
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: { maxUnavailable: 1, maxSurge: 1 }
+  command: ["celery", "-A", "app.celery_app", "worker", "-Q", "long", "--concurrency=2", "--loglevel=info"]
+  args: []
+  extraEnv: []
+  resources:
+    requests: { cpu: 500m, memory: 512Mi }
+    limits: { memory: 1Gi }
+  startupProbe: {}
+  livenessProbe:
+    exec:
+      command: ["sh", "-c", 'celery -A app.celery_app inspect ping -d "celery@$HOSTNAME" --timeout 10']
+    initialDelaySeconds: 30
+    periodSeconds: 60
+    timeoutSeconds: 20
+    failureThreshold: 3
+  readinessProbe: {}
+  lifecycle: {}
+  terminationGracePeriodSeconds: 330
+  topologySpread: true
+  topologySpreadConstraints: []
+  podSecurityContext: {}
+  podAnnotations: {}
+  podLabels: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  hpa:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 70
+    behavior:
+      scaleDown: { stabilizationWindowSeconds: 300 }
+  pdb:
+    enabled: true
+    maxUnavailable: 1
+
+# Active-active: every replica works and the database makes sure each due
+# run fires exactly once. Run 2+ for HA.
+scheduler:
+  enabled: true
+  replicaCount: 2
+  revisionHistoryLimit: 5
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: { maxUnavailable: 0, maxSurge: 1 }
+  command: ["python", "-m", "app.scheduler"]
+  args: []
+  extraEnv: []
+  resources:
+    requests: { cpu: 100m, memory: 192Mi }
+    limits: { memory: 384Mi }
+  startupProbe: {}
+  # The loop touches /tmp/scheduler-heartbeat every poll.
+  livenessProbe:
+    exec: { command: ["python", "-m", "app.scheduler", "healthcheck"] }
+    initialDelaySeconds: 30
+    periodSeconds: 30
+    timeoutSeconds: 10
+    failureThreshold: 3
+  readinessProbe: {}
+  lifecycle: {}
+  terminationGracePeriodSeconds: 30
+  topologySpread: true
+  topologySpreadConstraints: []
+  podSecurityContext: {}
+  podAnnotations: {}
+  podLabels: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  hpa:
+    enabled: false
+    minReplicas: 2
+    maxReplicas: 4
+    targetCPUUtilizationPercentage: 70
+    behavior: {}
+  pdb:
+    enabled: true
+    minAvailable: 1
+
+# Flower dashboard. ClusterIP only: reach it with
+# `kubectl port-forward svc/<release>-flower 5555` or an authenticated ingress.
+flower:
+  enabled: true
+  replicaCount: 1
+  revisionHistoryLimit: 10
+  strategy: {}
+  containerPort: 5555
+  command: ["sh", "-c", 'exec celery -A app.celery_app flower --port=5555 --basic_auth="$FLOWER_BASIC_AUTH"']
+  args: []
+  extraEnv: []
+  resources:
+    requests: { cpu: 50m, memory: 128Mi }
+    limits: { memory: 256Mi }
+  startupProbe: {}
+  livenessProbe: {}
+  readinessProbe:
+    tcpSocket: { port: http }
+    periodSeconds: 10
+  lifecycle: {}
+  terminationGracePeriodSeconds: 30
+  topologySpread: false
+  topologySpreadConstraints: []
+  # Same as the default, without fsGroup (as in deploy/k8s/flower.yaml).
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    runAsGroup: 1000
+    seccompProfile: { type: RuntimeDefault }
+  podAnnotations: {}
+  podLabels: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  service:
+    type: ClusterIP
+    port: 5555
+    annotations: {}
+  hpa:
+    enabled: false
+    minReplicas: 1
+    maxReplicas: 1
+    targetCPUUtilizationPercentage: 70
+    behavior: {}
+  pdb:
+    enabled: false
+
+# ---------------------------------------------------------------------------
+# Networking
+# ---------------------------------------------------------------------------
+
+# Ingress for the API Service.
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  host: jobs.example.com
+  path: /
+  pathType: Prefix
+  tls:
+    enabled: false
+    secretName: "" # e.g. jobs-example-com-tls (cert-manager can create it)
+
+# Only the API accepts traffic; workers, scheduler and Flower accept none
+# (Flower is reached via port-forward). Egress stays open for the managed
+# Postgres/Redis endpoints.
+networkPolicy:
+  enabled: true
+  # Who may reach the API on its container port. Empty = anyone. Standard
+  # NetworkPolicyPeer objects, e.g. only the ingress controller namespace:
+  #  - namespaceSelector:
+  #      matchLabels: { kubernetes.io/metadata.name: ingress-nginx }
+  apiIngressFrom: []
+
+# ---------------------------------------------------------------------------
+# Monitoring (Prometheus Operator CRDs must be installed)
+# ---------------------------------------------------------------------------
+
+metrics:
+  serviceMonitor:
+    enabled: false
+    path: /metrics
+    interval: 30s
+    scrapeTimeout: 10s
+    labels: {} # e.g. release: kube-prometheus-stack
+    relabelings: []
+    metricRelabelings: []
+  prometheusRule:
+    enabled: false
+    labels: {}
+    # Standard Prometheus rule objects, rendered into one group.
+    rules: []
+    #  - alert: JobSchedulerApiDown
+    #    expr: up{job="job-scheduler-api"} == 0
+    #    for: 5m
+    #    labels: { severity: critical }
+    #    annotations: { summary: "Job scheduler API is down" }

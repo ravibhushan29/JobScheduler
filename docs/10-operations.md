@@ -10,7 +10,7 @@
 flowchart LR
     subgraph Signals
         H["/health/ready<br/>DB + queue OK?"]
-        J["GET /jobs?status=…<br/>job history"]
+        J["GET /v1/jobs?status=…<br/>job history"]
         F["Flower :5555<br/>live workers & queues"]
         L["Logs (JSON)<br/>tagged lines"]
         SQL["SQL on Postgres<br/>counts & ages"]
@@ -25,10 +25,10 @@ flowchart LR
 | Question | How to answer it |
 |---|---|
 | Is the system up? | `GET /health/ready` → 200 with `"database": "ok", "broker": "ok"`. |
-| What's running now? | `GET /jobs?status=STARTED`, or Flower → Tasks. |
-| What failed recently? | `GET /jobs?status=FAILURE` — `error` and `traceback` explain why. |
+| What's running now? | `GET /v1/jobs?status=STARTED`, or Flower → Tasks. |
+| What failed recently? | `GET /v1/jobs?status=FAILURE` — `error` and `traceback` explain why. |
 | Are workers alive? | Flower → Workers, or `celery -A app.celery_app inspect ping`. |
-| Are schedulers alive? | `system:heartbeat`'s `run_count` keeps rising (`GET /schedules`); the scheduler logs `[SCHEDULE FIRED]`. |
+| Are schedulers alive? | `system:heartbeat`'s `run_count` keeps rising (`GET /v1/schedules`); the scheduler logs `[SCHEDULE FIRED]`. |
 | Is anything stuck? | The SQL queries in [10.4](#104-useful-sql). |
 
 ---
@@ -108,6 +108,11 @@ SELECT schedule_id, date_trunc('second', submitted_at), count(*) FROM jobs
 
 ## 10.5 Runbooks
 
+> **5.0:** the fastest way in is now the Grafana dashboard and the alerts in
+> [chapter 17](17-observability.md). Each alert names the runbook to open.
+> The operator console (`/ui`) shows failures grouped by cause, with a
+> "retry all" button ([15.8](15-security-and-tenancy.md#158-the-operator-console)).
+
 Start here when something looks wrong:
 
 ```mermaid
@@ -157,8 +162,8 @@ flowchart TD
 4. Scheduler logs mention the schedule? An unknown task disables it (error logged).
 
 ### Runbook F — Many failures
-1. `GET /jobs?status=FAILURE` → read `error` and `traceback`.
-2. If an external service is down, wait and then use `POST /jobs/{id}/retry` (with `Idempotency-Key`) for the ones that matter.
+1. `GET /v1/jobs?status=FAILURE` → read `error` and `traceback`.
+2. If an external service is down, wait and then use `POST /v1/jobs/{id}/retry` (with `Idempotency-Key`) for the ones that matter.
 3. `Worker lost …` errors → Runbook D step 3.
 
 ### Runbook G — Scale up
@@ -182,6 +187,12 @@ flowchart LR
 Database changes are only ever **additive** (new tables/columns), so old and new pods can run side by side during the rollout. Read the [CHANGELOG](../CHANGELOG.md) first.
 
 ### Rotating an API key (no downtime)
+**Managed keys** (5.0, recommended for applications): create a new key with
+the same scopes (`POST /v1/admin/api-keys`), deploy it to the client, then
+revoke the old one (`DELETE /v1/admin/api-keys/{id}`). `last_used_at` tells you
+when nobody uses the old one any more.
+
+**Bootstrap keys** (`API_KEYS`):
 1. Add the new key: `API_KEYS=old-key,new-key` → roll out.
 2. Move every client to `new-key`.
 3. Remove the old one: `API_KEYS=new-key` → roll out.
@@ -190,9 +201,12 @@ Database changes are only ever **additive** (new tables/columns), so old and new
 - **Back up Postgres** (point-in-time recovery). It contains everything that matters.
 - **Redis needs no backup**: it only holds messages in transit, and anything lost there is re-sent from Postgres.
 - After a restore, start the services normally; the scheduler re-sends any job recorded but not finished.
+- **Prove it monthly:** `scripts/backup_restore_drill.sh` dumps, restores into a
+  throwaway Postgres, compares every table and starts the app on the copy.
+  See [17.6](17-observability.md#176-disaster-recovery).
 
 ### Data retention
-Finished jobs are deleted after `JOB_RETENTION_DAYS` (30) by the nightly `system:cleanup` (03:00 UTC). Live results expire after `CELERY_RESULT_EXPIRES` (1 day).
+Finished jobs (and their webhook deliveries and finished workflows) are deleted after `JOB_RETENTION_DAYS` (30) by the nightly `system:cleanup` (03:00 UTC). Audit entries are kept for `AUDIT_RETENTION_DAYS` (365). Live results expire after `CELERY_RESULT_EXPIRES` (1 day).
 
 ### Verifying the guarantees after a change
 ```bash

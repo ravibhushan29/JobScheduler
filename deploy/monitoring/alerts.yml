@@ -1,0 +1,82 @@
+# Prometheus alert rules for the job scheduler. Load with `rule_files:` (see
+# prometheus.yml), or through the Helm chart's prometheusRule.rules.
+# Validate: promtool check rules alerts.yml
+groups:
+  - name: job-scheduler
+    rules:
+      - alert: JobSchedulerMetricsDown
+        expr: max(jobscheduler_metrics_up) < 1 or absent(jobscheduler_metrics_up)
+        for: 5m
+        labels: {severity: critical}
+        annotations:
+          summary: No API replica can read cluster metrics
+          description: Either every API replica is down or the database is unreachable. See runbook A in docs/10-operations.md.
+
+      - alert: JobSchedulerSchedulesOverdue
+        expr: max(jobscheduler_schedule_max_overdue_seconds) > 120
+        for: 2m
+        labels: {severity: critical}
+        annotations:
+          summary: Schedules are not firing
+          description: A schedule is {{ $value | humanizeDuration }} late. Usually no scheduler replica is running (runbook E).
+
+      - alert: JobSchedulerQueueStuck
+        expr: max by (queue) (jobscheduler_oldest_queued_job_age_seconds) > 600
+        for: 5m
+        labels: {severity: warning}
+        annotations:
+          summary: Jobs on queue {{ $labels.queue }} are not being picked up
+          description: The oldest queued job has waited {{ $value | humanizeDuration }}. Check workers for this queue (runbook C).
+
+      - alert: JobSchedulerQueueWaitHigh
+        expr: max by (queue) (jobscheduler_job_wait_seconds{quantile="0.95"}) > 60
+        for: 10m
+        labels: {severity: warning}
+        annotations:
+          summary: Jobs on {{ $labels.queue }} wait over a minute to start (p95)
+          description: Add workers for this queue or look for slow tasks (runbook G).
+
+      - alert: JobSchedulerFailureRateHigh
+        expr: |
+          (
+            max by (task) (jobscheduler_jobs_finished_recent{status="FAILURE"})
+            / clamp_min(sum by (task) (max by (task, status) (jobscheduler_jobs_finished_recent)), 1)
+          ) > 0.2
+          and max by (task) (jobscheduler_jobs_finished_recent{status="FAILURE"}) >= 5
+        for: 10m
+        labels: {severity: warning}
+        annotations:
+          summary: Over 20% of {{ $labels.task }} jobs are failing
+          description: Look at GET /v1/jobs/failures or the console's Failures tab (runbook F).
+
+      - alert: JobSchedulerOutboxBacklog
+        expr: max(jobscheduler_outbox_oldest_age_seconds) > 300
+        for: 5m
+        labels: {severity: warning}
+        annotations:
+          summary: Saved jobs are not reaching the queue
+          description: The oldest unpublished job is {{ $value | humanizeDuration }} old. Redis is likely down or unreachable (runbook B).
+
+      - alert: JobSchedulerWorkersLost
+        expr: increase(jobscheduler_events_total{event="worker_lost_recovered"}[15m]) > 5
+        labels: {severity: warning}
+        annotations:
+          summary: Workers keep dying mid-job
+          description: "{{ $value }} jobs were recovered from dead workers in 15 minutes: check OOM kills and node health (runbook D)."
+
+      - alert: JobSchedulerWebhooksFailing
+        expr: increase(jobscheduler_events_total{event="webhook_failed"}[1h]) > 0
+        labels: {severity: warning}
+        annotations:
+          summary: Webhooks gave up after every retry
+          description: A receiver has been failing for about a day. Check GET /v1/jobs/{id}/webhooks for the error.
+
+      - alert: JobSchedulerApiErrors
+        expr: |
+          sum(rate(jobscheduler_http_requests_total{status=~"5.."}[5m]))
+          / clamp_min(sum(rate(jobscheduler_http_requests_total[5m])), 1e-9) > 0.05
+        for: 5m
+        labels: {severity: warning}
+        annotations:
+          summary: Over 5% of API requests fail with 5xx
+          description: Check /health/ready and the API logs (runbooks A and B).

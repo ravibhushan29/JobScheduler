@@ -24,4 +24,4 @@ resources:
   - networkpolicy.yaml
 images:
   - name: job-scheduler # replace with your registry, e.g. ghcr.io/acme/job-scheduler
-    newTag: "4.0.0"
+    newTag: "5.0.0"

@@ -1,0 +1,27 @@
+{{- range (list (dict "key" "api" "name" "api") (dict "key" "flower" "name" "flower")) }}
+{{- $c := index $.Values .key }}
+{{- if $c.enabled }}
+{{- $ctx := dict "root" $ "name" .name }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "job-scheduler.componentName" $ctx }}
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "job-scheduler.componentLabels" $ctx | nindent 4 }}
+  {{- with (merge (dict) ($c.service.annotations | default dict) ($.Values.commonAnnotations | default dict)) }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ $c.service.type }}
+  selector:
+    {{- include "job-scheduler.componentSelectorLabels" $ctx | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ $c.service.port }}
+      targetPort: http
+      protocol: TCP
+{{- end }}
+{{- end }}

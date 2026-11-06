@@ -13,9 +13,10 @@ the first time it appears (and again in the [glossary](02-key-concepts.md)).
 | You are… | Read these, in order |
 |---|---|
 | **New to the project, any background** (manager, tester, student) | [1. What is this?](01-what-is-this.md) → [2. Key concepts](02-key-concepts.md) → [7. How "runs exactly once" works](07-reliability.md) (first half) |
+| **A frontend or backend developer integrating with it** (your app calls the API) | [1](01-what-is-this.md) → [14. Integration guide](14-integration-guide.md) → [16. Webhooks & workflows](16-webhooks-and-workflows.md) → [5. Using the API](05-using-the-api.md) (reference) → [18. Versioning](18-api-versioning.md) |
 | **A user of the API** (you want to submit jobs or create schedules) | [1](01-what-is-this.md) → [4. Getting started](04-getting-started.md) → [5. Using the API](05-using-the-api.md) → [6. Scheduling](06-scheduling.md) |
 | **A developer** joining the project | [1](01-what-is-this.md) → [2](02-key-concepts.md) → [3. Architecture](03-architecture.md) → [4](04-getting-started.md) → [11. Developer guide](11-developer-guide.md) → [7](07-reliability.md) |
-| **Operations / DevOps / SRE** | [3](03-architecture.md) → [8. Configuration](08-configuration.md) → [9. Deployment](09-deployment.md) → [10. Operations & runbooks](10-operations.md) → [7](07-reliability.md) |
+| **Operations / DevOps / SRE** | [3](03-architecture.md) → [8. Configuration](08-configuration.md) → [9. Deployment](09-deployment.md) → [10. Operations & runbooks](10-operations.md) → [17. Observability & DR](17-observability.md) → [15. Security & tenants](15-security-and-tenancy.md) → [7](07-reliability.md) |
 | **A visual learner** | [13. Diagram gallery](13-diagrams.md) — every picture, each linked to its explanation |
 | **Something is broken right now** | [12. FAQ & troubleshooting](12-faq-troubleshooting.md) → [10. Runbooks](10-operations.md#105-runbooks) |
 
@@ -38,11 +39,18 @@ the first time it appears (and again in the [glossary](02-key-concepts.md)).
 | 11 | [Developer guide](11-developer-guide.md) | A tour of the code, how to add a task, testing, and conventions. |
 | 12 | [FAQ & troubleshooting](12-faq-troubleshooting.md) | Quick answers to common questions and problems. |
 | 13 | [Diagram gallery](13-diagrams.md) | All 17 key diagrams in one place — system, flows, states, database, deployment. |
+| 14 | [Integration guide](14-integration-guide.md) | Calling the API from your app: backend-for-frontend, polling, webhooks, event stream, errors, idempotency, SDKs, TypeScript & React code. |
+| 15 | [Security, keys & tenants](15-security-and-tenancy.md) | Scoped API keys, tenants, rate limits, the audit log, the operator console. |
+| 16 | [Webhooks, workflows & job options](16-webhooks-and-workflows.md) | Priorities, delays, timeouts; signed webhooks; fan-out/fan-in workflows; the failures view; cron time zones. |
+| 17 | [Observability, performance & DR](17-observability.md) | Metrics, Grafana dashboard, alerts, tracing, measured throughput, backup-and-restore drills. |
+| 18 | [API versioning](18-api-versioning.md) | `/v1`, what may change, and how breaking changes would ship. |
 
 Other documents in the repository:
 - [README.md](../README.md) — the one-page project summary.
 - [USER_TESTING.md](../USER_TESTING.md) — a hands-on walkthrough that exercises every endpoint in order.
 - [CHANGELOG.md](../CHANGELOG.md) — what changed in each version.
+- [sdk/python](../sdk/python/README.md) and [sdk/typescript](../sdk/typescript/README.md) — the client SDKs.
+- [deploy/helm/job-scheduler](../deploy/helm/job-scheduler/README.md) — the Helm chart.
 
 ---
 

@@ -223,6 +223,14 @@ def _on_task_failure(task_id, exception, einfo=None, sender=None, **_) -> None:
     )
 
 
+@signals.worker_process_init.connect
+def _init_worker_process(**_) -> None:
+    """Per worker process (after fork): set up tracing, if enabled."""
+    from app.tracing import setup_tracing
+
+    setup_tracing("job-scheduler-worker")
+
+
 @signals.worker_ready.connect
 def _on_worker_ready(**_) -> None:
     if settings.AUTO_MIGRATE:

@@ -19,6 +19,9 @@ Each loop (every SCHEDULE_POLL_INTERVAL_SECONDS, plus jitter):
      renewing its lease (crash, node loss) is re-published so a healthy
      worker finishes it; one Celery recorded as failed is marked FAILURE.
 
+In parallel, a second loop sends due webhooks (`app.webhooks`) every
+WEBHOOK_POLL_INTERVAL_SECONDS, so slow webhook receivers never delay schedules.
+
 Losing a replica loses nothing: the others keep going on their next loop.
 """
 
@@ -32,11 +35,14 @@ import sys
 import time
 from datetime import datetime, timezone
 
-from app import db, publisher, scheduling
+import httpx
+
+from app import db, publisher, scheduling, webhooks
 from app.celery_app import celery_app
 from app.config import settings
 from app.logging_config import setup_logging
 from app.tasks import SYSTEM_SCHEDULES, TASK_REGISTRY
+from app.tracing import setup_tracing
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +79,7 @@ async def dispatch_due_schedules(now: datetime | None = None) -> list[str]:
             continue  # another replica fired it, or it was paused/edited meanwhile
 
         logger.info("[SCHEDULE FIRED] schedule_id=%s task=%s task_id=%s", schedule["id"], task.name, task_id)
+        await _count("schedule_fired")
         await publisher.publish_job(
             {
                 "task_id": task_id,
@@ -90,7 +97,16 @@ async def relay_outbox() -> int:
     """Publish jobs that were recorded but never reached the broker. Returns how many were published."""
     published = 0
     for job in await db.claim_unpublished_jobs(settings.OUTBOX_REPUBLISH_AFTER_SECONDS):
-        logger.warning("[OUTBOX] publishing task_id=%s (%s) that was never published", job["task_id"], job["task_name"])
+        if job["run_after"] is not None:
+            # A delayed job, or a workflow step whose dependencies just succeeded: expected.
+            logger.info(
+                "[RELEASED] publishing task_id=%s (%s), due at %s", job["task_id"], job["task_name"], job["run_after"]
+            )
+        else:
+            logger.warning(
+                "[OUTBOX] publishing task_id=%s (%s) that was never published", job["task_id"], job["task_name"]
+            )
+            await _count("outbox_relayed")
         published += await publisher.publish_job(job)
     return published
 
@@ -142,8 +158,16 @@ async def recover_abandoned_jobs() -> int:
             continue
 
         logger.warning("[RECOVER] task_id=%s (%s): worker lost, re-publishing", task_id, job["task_name"])
+        await _count("worker_lost_recovered")
         await publisher.publish_job(job)
     return handled
+
+
+async def _count(name: str) -> None:
+    try:
+        await db.increment_counter(name)
+    except Exception:
+        logger.debug("Could not count event %s", name, exc_info=True)
 
 
 async def run_once() -> None:
@@ -165,6 +189,7 @@ async def run_forever(stop: asyncio.Event) -> None:
         f"{socket.gethostname()}:{os.getpid()}",
         settings.SCHEDULE_POLL_INTERVAL_SECONDS,
     )
+    webhook_loop = asyncio.create_task(run_webhooks_forever(stop))
     while not stop.is_set():
         await run_once()
         # Jitter so replicas don't hit the database in lockstep.
@@ -173,7 +198,22 @@ async def run_forever(stop: asyncio.Event) -> None:
             await asyncio.wait_for(stop.wait(), timeout=delay)
         except TimeoutError:
             pass
+    await webhook_loop
     logger.info("Scheduler stopped")
+
+
+async def run_webhooks_forever(stop: asyncio.Event) -> None:
+    """Send due webhooks until `stop` is set. Errors are logged; the next pass retries."""
+    async with httpx.AsyncClient(timeout=settings.WEBHOOK_TIMEOUT_SECONDS, follow_redirects=False) as client:
+        while not stop.is_set():
+            try:
+                await webhooks.deliver_due_webhooks(client)
+            except Exception:
+                logger.exception("Webhook delivery pass failed; will retry")
+            try:
+                await asyncio.wait_for(stop.wait(), timeout=settings.WEBHOOK_POLL_INTERVAL_SECONDS)
+            except TimeoutError:
+                pass
 
 
 def _touch_heartbeat() -> None:
@@ -199,6 +239,7 @@ def main() -> None:
         sys.exit(healthcheck())
 
     setup_logging(log_filename="scheduler.log")
+    setup_tracing("job-scheduler-scheduler")
 
     async def _main() -> None:
         stop = asyncio.Event()

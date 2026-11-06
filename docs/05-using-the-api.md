@@ -11,6 +11,10 @@ KEY=dev-key
 
 ---
 
+> **Building a feature on top of the API** (a web app, a mobile app, another service)?
+> Read [14. Integration guide](14-integration-guide.md) for copy-paste TypeScript/React code,
+> polling, error handling and security.
+
 ## 5.1 How every request is handled
 
 ```mermaid
@@ -49,21 +53,21 @@ flowchart TD
 
 ---
 
-## 5.3 Submitting jobs — `/tasks/*`
+## 5.3 Submitting jobs — `/v1/tasks/*`
 
 Each call queues one job and **returns immediately** with its ID. The job runs later on a worker.
 
 | Request | Body (example) | Rules |
 |---|---|---|
-| `POST /tasks/add` | `{"x": 3, "y": 4}` | numbers |
-| `POST /tasks/long` | `{"duration_seconds": 5}` | whole number 1–120; runs on the `long` queue |
-| `POST /tasks/flaky` | `{"fail_probability": 0.7}` | 0.0 (never fails) to 1.0 (always fails) |
-| `POST /tasks/notify` | `{"email": "ana@example.com", "message": "Your report is ready."}` | valid email; message 1–2000 characters |
-| `POST /tasks/test-batch` | *(none)* | queues one of each, incl. one guaranteed failure |
+| `POST /v1/tasks/add` | `{"x": 3, "y": 4}` | numbers |
+| `POST /v1/tasks/long` | `{"duration_seconds": 5}` | whole number 1–120; runs on the `long` queue |
+| `POST /v1/tasks/flaky` | `{"fail_probability": 0.7}` | 0.0 (never fails) to 1.0 (always fails) |
+| `POST /v1/tasks/notify` | `{"email": "ana@example.com", "message": "Your report is ready."}` | valid email; message 1–2000 characters |
+| `POST /v1/tasks/test-batch` | *(none)* | queues one of each, incl. one guaranteed failure |
 
 **Example**
 ```bash
-curl -X POST $API/tasks/add -H "X-API-Key: $KEY" -H "Content-Type: application/json" -d '{"x": 3, "y": 4}'
+curl -X POST $API/v1/tasks/add -H "X-API-Key: $KEY" -H "Content-Type: application/json" -d '{"x": 3, "y": 4}'
 ```
 **Answer — `201 Created`**
 ```json
@@ -76,9 +80,9 @@ curl -X POST $API/tasks/add -H "X-API-Key: $KEY" -H "Content-Type: application/j
 
 ---
 
-## 5.4 Inspecting jobs — `/jobs`
+## 5.4 Inspecting jobs — `/v1/jobs`
 
-### List: `GET /jobs`
+### List: `GET /v1/jobs`
 | Parameter | Default | Meaning |
 |---|---|---|
 | `limit` | 50 | How many (1–200) |
@@ -86,7 +90,7 @@ curl -X POST $API/tasks/add -H "X-API-Key: $KEY" -H "Content-Type: application/j
 | `status` | — | Only this status, e.g. `FAILURE` |
 
 ```bash
-curl "$API/jobs?status=FAILURE&limit=10" -H "X-API-Key: $KEY"
+curl "$API/v1/jobs?status=FAILURE&limit=10" -H "X-API-Key: $KEY"
 ```
 ```json
 {
@@ -96,7 +100,7 @@ curl "$API/jobs?status=FAILURE&limit=10" -H "X-API-Key: $KEY"
 ```
 `total` counts *all* matching jobs, so you can build pages: `offset=0`, `offset=10`, …
 
-### One job: `GET /jobs/{task_id}`
+### One job: `GET /v1/jobs/{task_id}`
 The full history record:
 ```json
 {
@@ -133,7 +137,7 @@ The full history record:
 | `published_at` | When it reached the queue. `null` for more than a minute means the queue was unreachable. |
 | `retry_of` / `schedule_id` | Where it came from: a manual retry of another job, or a schedule. |
 
-### Live status: `GET /jobs/{task_id}/status`
+### Live status: `GET /v1/jobs/{task_id}/status`
 Reads Celery's live record, which includes **progress** for running jobs:
 ```json
 {"task_id": "…", "state": "PROGRESS", "source": "result_backend", "result": {"progress": 60}, "…": "…"}
@@ -141,13 +145,13 @@ Reads Celery's live record, which includes **progress** for running jobs:
 Live records expire after 24 hours; after that this endpoint falls back to the
 history record and says `"source": "job_record"`.
 
-### Retry: `POST /jobs/{task_id}/retry`
+### Retry: `POST /v1/jobs/{task_id}/retry`
 Creates a **new** job with the same task and inputs; the new job's `retry_of`
 points to the old one.
 
 ```mermaid
 flowchart LR
-    A[POST /jobs/ID/retry] --> B{Job exists?}
+    A[POST /v1/jobs/ID/retry] --> B{Job exists?}
     B -->|no| N[404]
     B -->|yes| C{Status FAILURE<br/>or ?force=true?}
     C -->|no| D[409 conflict]
@@ -156,9 +160,9 @@ flowchart LR
     E -->|yes| G["201 — new job,<br/>retry_of = ID"]
 ```
 
-### Cancel: `DELETE /jobs/{task_id}`
+### Cancel: `DELETE /v1/jobs/{task_id}`
 ```bash
-curl -X DELETE $API/jobs/<id> -H "X-API-Key: $KEY"
+curl -X DELETE $API/v1/jobs/<id> -H "X-API-Key: $KEY"
 # 200 {"task_id": "…", "status": "revoked"}
 ```
 - A waiting job will **never** start — on any worker, even one that missed the cancel message.
@@ -167,17 +171,17 @@ curl -X DELETE $API/jobs/<id> -H "X-API-Key: $KEY"
 
 ---
 
-## 5.5 Schedules — `/schedules`
+## 5.5 Schedules — `/v1/schedules`
 
 Full explanation in [chapter 6](06-scheduling.md). Quick reference:
 
 | Request | Purpose |
 |---|---|
-| `POST /schedules` | Create (`once` / `interval` / `cron`) |
-| `GET /schedules?enabled_only=&limit=&offset=` | List, newest first |
-| `GET /schedules/{id}` | One schedule |
-| `PATCH /schedules/{id}` | Pause/resume (`enabled`), change `interval_seconds` or `cron_expr` |
-| `DELETE /schedules/{id}` | Delete (jobs it already created are kept) |
+| `POST /v1/schedules` | Create (`once` / `interval` / `cron`) |
+| `GET /v1/schedules?enabled_only=&limit=&offset=` | List, newest first |
+| `GET /v1/schedules/{id}` | One schedule |
+| `PATCH /v1/schedules/{id}` | Pause/resume (`enabled`), change `interval_seconds` or `cron_expr` |
+| `DELETE /v1/schedules/{id}` | Delete (jobs it already created are kept) |
 
 ---
 
@@ -188,7 +192,7 @@ created. Send an **idempotency key** — any unique string you choose, such as
 an order number — and you can safely send the request again:
 
 ```bash
-curl -X POST $API/tasks/add -H "X-API-Key: $KEY" -H "Idempotency-Key: invoice-2026-0042" \
+curl -X POST $API/v1/tasks/add -H "X-API-Key: $KEY" -H "Idempotency-Key: invoice-2026-0042" \
      -H "Content-Type: application/json" -d '{"x": 1, "y": 2}'
 ```
 
@@ -201,8 +205,8 @@ flowchart TD
     D -->|no| F["409 conflict<br/>(key reused for something else)"]
 ```
 
-Works on `POST /tasks/*` (except test-batch), `POST /jobs/{id}/retry` and
-`POST /schedules`. Use a **new key for each genuinely new request**.
+Works on `POST /v1/tasks/*` (except test-batch), `POST /v1/jobs/{id}/retry` and
+`POST /v1/schedules`. Use a **new key for each genuinely new request**.
 
 ---
 
@@ -225,7 +229,7 @@ Every error, from every endpoint, has this shape:
 | `bad_request` | 400 | A field that doesn't apply (e.g. `cron_expr` on an interval schedule) | Fix the request. |
 | `unauthorized` | 401 | Missing/wrong API key | Send a valid `X-API-Key`. |
 | `not_found` | 404 | Unknown job/schedule ID, or wrong URL | Check the ID/URL. |
-| `method_not_allowed` | 405 | e.g. `PUT /jobs` | Use the documented method. |
+| `method_not_allowed` | 405 | e.g. `PUT /v1/jobs` | Use the documented method. |
 | `conflict` | 409 | Cancel a finished job; retry a non-failed job; edit a system schedule; reused idempotency key | Usually nothing — the request isn't needed, or use a new key. |
 | `validation_error` | 422 | Wrong type, out of range, bad cron, past `run_at`, wrong task arguments | Read `details` — it names each bad field. |
 | `internal_error` | 500 | A bug | Report it; the server logs have the details. |
@@ -246,7 +250,7 @@ def submit_add(x, y):
     key = str(uuid.uuid4())                       # one key per logical request
     for attempt in range(5):                      # retry network errors safely
         try:
-            r = requests.post(f"{API}/tasks/add", json={"x": x, "y": y},
+            r = requests.post(f"{API}/v1/tasks/add", json={"x": x, "y": y},
                               headers={**HEADERS, "Idempotency-Key": key}, timeout=10)
             if r.status_code in (200, 201):
                 return r.json()["task_id"]
@@ -259,7 +263,7 @@ def submit_add(x, y):
 
 def wait_for(task_id):
     while True:
-        job = requests.get(f"{API}/jobs/{task_id}", headers=HEADERS).json()
+        job = requests.get(f"{API}/v1/jobs/{task_id}", headers=HEADERS).json()
         if job["status"] in ("SUCCESS", "FAILURE", "REVOKED"):
             return job
         time.sleep(1)
@@ -267,6 +271,36 @@ def wait_for(task_id):
 job = wait_for(submit_add(3, 4))
 print(job["status"], job["result"])               # SUCCESS 7.0
 ```
+
+## 5.9 Every endpoint (5.0)
+
+All paths below are under `/v1`. The pre-5.0 unprefixed paths still work as
+aliases ([chapter 18](18-api-versioning.md)).
+
+| Method & path | Scope | What it does | More |
+|---|---|---|---|
+| `POST /tasks/add`, `/long`, `/flaky`, `/notify`, `/test-batch` | `jobs:write` | Submit a sample task | 5.3 |
+| `POST /jobs` | `jobs:write` | Submit **any** public task, with priority, delay, timeout, retries, webhook | [16.1](16-webhooks-and-workflows.md#161-per-job-options) |
+| `GET /jobs` | `jobs:read` | List; filter by `status`, `task_name`, `workflow_id` | 5.4 |
+| `GET /jobs/{id}` | `jobs:read` | The job record | 5.4 |
+| `GET /jobs/{id}/status` | `jobs:read` | Live state, including progress | 5.4 |
+| `GET /jobs/{id}/events` | `jobs:read` | Live state as a server-sent event stream | [14.16](14-integration-guide.md#1416-live-updates-with-the-event-stream) |
+| `GET /jobs/{id}/webhooks` | `jobs:read` | Webhook deliveries for the job | [16.2](16-webhooks-and-workflows.md#162-webhooks) |
+| `POST /jobs/{id}/retry` | `jobs:write` | Re-submit | 5.4 |
+| `DELETE /jobs/{id}` | `jobs:write` | Cancel | 5.4 |
+| `GET /jobs/failures` | `jobs:read` | Failed jobs grouped by task and error | [16.4](16-webhooks-and-workflows.md#164-the-failures-view-dead-letter-queue) |
+| `POST /jobs/failures/retry` | `jobs:write` | Re-submit failed jobs in bulk | 16.4 |
+| `POST /workflows` · `GET /workflows` · `GET /workflows/{id}` · `DELETE /workflows/{id}` | `jobs:*` | Workflows | [16.3](16-webhooks-and-workflows.md#163-workflows) |
+| `POST /schedules` · `GET` · `GET /{id}` · `PATCH /{id}` · `DELETE /{id}` | `schedules:*` | Schedules (cron may have a `timezone`) | [6](06-scheduling.md) |
+| `POST /admin/api-keys` · `GET` · `DELETE /{id}` | `admin` | Managed keys | [15.4](15-security-and-tenancy.md#154-creating-listing-and-revoking-keys) |
+| `GET /admin/audit-log` | `admin` | Who did what | [15.7](15-security-and-tenancy.md#157-the-audit-log) |
+
+Unversioned and needing no key: `GET /health`, `GET /health/ready`,
+`GET /metrics` ([17.2](17-observability.md#172-metrics)), `GET /ui` (the console),
+`GET /docs`, `GET /openapi.json`.
+
+New error types in 5.0: `403 forbidden` (missing scope, task not allowed) and
+`429 rate_limited` (with `Retry-After`).
 
 For a guided tour of every endpoint in order, see [USER_TESTING.md](../USER_TESTING.md).
 

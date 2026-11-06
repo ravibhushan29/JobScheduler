@@ -148,22 +148,22 @@ Without a `DATABASE_URL` setting, data is stored in SQLite files under `data/`
 ### Using the browser (easiest)
 1. Open **http://localhost:8000/docs** — the interactive API page (Swagger UI).
 2. Click **Authorize** (top right), type `dev-key`, click **Authorize**, then **Close**.
-3. Open **Tasks → POST /tasks/add**, click **Try it out**, keep the example body `{"x": 3, "y": 4}`, click **Execute**.
+3. Open **Tasks → POST /v1/tasks/add**, click **Try it out**, keep the example body `{"x": 3, "y": 4}`, click **Execute**.
 4. Under **Server response** you'll see code **201** and a body like
    `{"task_id": "8f14e45f-…", "status": "queued"}`. Copy the `task_id`.
-5. Open **Jobs → GET /jobs/{task_id}**, **Try it out**, paste the ID, **Execute**.
+5. Open **Jobs → GET /v1/jobs/{task_id}**, **Try it out**, paste the ID, **Execute**.
    You'll see `"status": "SUCCESS"` and `"result": 7.0`.
 
 ### Using the terminal
 ```bash
 # submit
-curl -X POST http://localhost:8000/tasks/add \
+curl -X POST http://localhost:8000/v1/tasks/add \
   -H "X-API-Key: dev-key" -H "Content-Type: application/json" \
   -d '{"x": 3, "y": 4}'
 # → {"task_id":"8f14e45f-...","status":"queued"}
 
 # check (replace the ID)
-curl http://localhost:8000/jobs/8f14e45f-... -H "X-API-Key: dev-key"
+curl http://localhost:8000/v1/jobs/8f14e45f-... -H "X-API-Key: dev-key"
 ```
 
 What just happened behind the scenes:
@@ -175,7 +175,7 @@ sequenceDiagram
     participant DB as Database
     participant Q as Queue (Redis)
     participant W as Worker
-    You->>API: POST /tasks/add {x:3, y:4}
+    You->>API: POST /v1/tasks/add {x:3, y:4}
     API->>DB: save job (QUEUED)
     API->>Q: put job on the "default" queue
     API-->>You: 201 + task_id
@@ -183,7 +183,7 @@ sequenceDiagram
     W->>DB: claim job (STARTED)
     W->>W: 3 + 4 = 7
     W->>DB: save result 7 (SUCCESS)
-    You->>API: GET /jobs/{task_id}
+    You->>API: GET /v1/jobs/{task_id}
     API->>DB: read job
     API-->>You: status SUCCESS, result 7.0
 ```
@@ -191,10 +191,10 @@ sequenceDiagram
 ### Try the others
 | Try | Body | What to look for |
 |---|---|---|
-| `POST /tasks/long` | `{"duration_seconds": 10}` | Call `GET /jobs/{id}/status` while it runs: `state` = `PROGRESS`, `result.progress` climbing to 100. |
-| `POST /tasks/flaky` | `{"fail_probability": 1.0}` | After ~1 minute: `FAILURE`, with `error` and `traceback`, `retries: 3`. |
-| `POST /tasks/notify` | `{"email": "you@example.com", "message": "hi"}` | Sometimes succeeds first time, sometimes after a retry. |
-| `POST /tasks/test-batch` | *(no body)* | Queues one of everything at once. |
+| `POST /v1/tasks/long` | `{"duration_seconds": 10}` | Call `GET /v1/jobs/{id}/status` while it runs: `state` = `PROGRESS`, `result.progress` climbing to 100. |
+| `POST /v1/tasks/flaky` | `{"fail_probability": 1.0}` | After ~1 minute: `FAILURE`, with `error` and `traceback`, `retries: 3`. |
+| `POST /v1/tasks/notify` | `{"email": "you@example.com", "message": "hi"}` | Sometimes succeeds first time, sometimes after a retry. |
+| `POST /v1/tasks/test-batch` | *(no body)* | Queues one of everything at once. |
 
 ---
 
@@ -204,15 +204,15 @@ Run `add(10, 20)` once, 30 seconds from now:
 
 ```bash
 RUN_AT=$(python3 -c "from datetime import datetime,timedelta,timezone; print((datetime.now(timezone.utc)+timedelta(seconds=30)).isoformat())")
-curl -X POST http://localhost:8000/schedules \
+curl -X POST http://localhost:8000/v1/schedules \
   -H "X-API-Key: dev-key" -H "Content-Type: application/json" \
   -d "{\"task_name\": \"app.tasks.add\", \"args\": [10, 20], \"schedule_type\": \"once\", \"run_at\": \"$RUN_AT\"}"
 ```
 Note the `id` in the response. Wait about 40 seconds, then:
 ```bash
-curl http://localhost:8000/schedules/<id> -H "X-API-Key: dev-key"
+curl http://localhost:8000/v1/schedules/<id> -H "X-API-Key: dev-key"
 # "run_count": 1, "enabled": false   ← it fired once and switched itself off
-curl "http://localhost:8000/jobs?limit=3" -H "X-API-Key: dev-key"
+curl "http://localhost:8000/v1/jobs?limit=3" -H "X-API-Key: dev-key"
 # a job with "schedule_id": <id> and "result": 30.0
 ```
 

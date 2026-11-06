@@ -102,11 +102,18 @@ def heartbeat() -> str:
 
 @celery_app.task(name="app.tasks.scheduled_cleanup", queue=settings.DEFAULT_QUEUE_NAME)
 def scheduled_cleanup() -> str:
-    """Delete finished jobs older than JOB_RETENTION_DAYS and expired Celery results."""
+    """Delete finished jobs older than JOB_RETENTION_DAYS, old audit entries, and expired Celery results."""
     cutoff = datetime.now(timezone.utc) - timedelta(days=settings.JOB_RETENTION_DAYS)
     deleted = db.run_sync(db.delete_finished_jobs_before(cutoff))
+    audit_cutoff = datetime.now(timezone.utc) - timedelta(days=settings.AUDIT_RETENTION_DAYS)
+    audit_deleted = db.run_sync(db.delete_audit_entries_before(audit_cutoff))
     celery_app.backend.cleanup()  # rows older than CELERY_RESULT_EXPIRES
-    logger.info("cleanup: deleted %d job rows finished before %s", deleted, cutoff.isoformat())
+    logger.info(
+        "cleanup: deleted %d job rows finished before %s and %d audit entries",
+        deleted,
+        cutoff.isoformat(),
+        audit_deleted,
+    )
     return f"deleted {deleted} job rows"
 
 

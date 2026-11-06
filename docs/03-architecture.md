@@ -98,7 +98,7 @@ lock). In Kubernetes it runs as an *init container* before every pod starts.
 
 ## 3.3 Life of a job, step by step
 
-Here is what happens when you call `POST /tasks/add` with `{"x": 3, "y": 4}`:
+Here is what happens when you call `POST /v1/tasks/add` with `{"x": 3, "y": 4}`:
 
 ```mermaid
 sequenceDiagram
@@ -109,7 +109,7 @@ sequenceDiagram
     participant R as Redis
     participant W as Worker
 
-    C->>A: POST /tasks/add {"x":3,"y":4}
+    C->>A: POST /v1/tasks/add {"x":3,"y":4}
     A->>D: INSERT job (status QUEUED, published_at = empty)
     A->>R: publish message (job ID, task, args)
     A->>D: set published_at = now
@@ -125,7 +125,7 @@ sequenceDiagram
     W->>D: set SUCCESS, result=7 (only if still attempt 1)
     W->>R: acknowledge message (remove it)
 
-    C->>A: GET /jobs/{id}
+    C->>A: GET /v1/jobs/{id}
     A->>D: read job
     A-->>C: {"status":"SUCCESS","result":7.0,"attempts":1,...}
 ```
@@ -141,7 +141,7 @@ Suppose `flaky_task` raises an error:
 2. Celery re-publishes the job with a delay (5 s, then 10 s, then 20 s… with some randomness), keeping the same job ID and increasing `retries`.
 3. A worker picks it up and claims it again (allowed, because it's a new retry), and `attempts` goes up.
 4. If it keeps failing after the maximum retries (3 by default), the status becomes `FAILURE`, and the `error` and `traceback` fields are saved.
-5. You can then call `POST /jobs/{id}/retry`, which creates a **new** job with the same inputs and `retry_of` pointing at the old one.
+5. You can then call `POST /v1/jobs/{id}/retry`, which creates a **new** job with the same inputs and `retry_of` pointing at the old one.
 
 ---
 

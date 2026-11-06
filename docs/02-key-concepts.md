@@ -25,6 +25,9 @@ Every job moves through a few **statuses**. You'll see these words everywhere:
 ```mermaid
 stateDiagram-v2
     [*] --> QUEUED: you submit it
+    [*] --> WAITING: workflow step with dependencies
+    WAITING --> QUEUED: its dependencies succeeded
+    WAITING --> REVOKED: a dependency failed
     QUEUED --> STARTED: a worker picks it up
     STARTED --> SUCCESS: it worked
     STARTED --> RETRY: it failed, will try again
@@ -39,17 +42,18 @@ stateDiagram-v2
 
 | Status | Meaning | Final? |
 |---|---|---|
-| `QUEUED` | Accepted and waiting for a free worker. | No |
+| `QUEUED` | Accepted and waiting for a free worker (or for its delayed start time). | No |
+| `WAITING` | A workflow step waiting for the steps it depends on ([16.3](16-webhooks-and-workflows.md#163-workflows)). | No |
 | `STARTED` | A worker is running it right now. | No |
 | `RETRY` | It failed but will be tried again automatically after a short wait. | No |
 | `SUCCESS` | Finished. The `result` field holds the answer. | ✅ Yes |
 | `FAILURE` | Failed for good. The `error` and `traceback` fields say why. | ✅ Yes |
-| `REVOKED` | Cancelled by someone. | ✅ Yes |
+| `REVOKED` | Cancelled by someone, or a workflow step skipped because a step before it failed. | ✅ Yes |
 
 Once a job is in a **final** status it never changes again, and it is
 **never run again** — not even if a duplicate message turns up.
 
-When you ask for the *live* status (`GET /jobs/{id}/status`) you may also see
+When you ask for the *live* status (`GET /v1/jobs/{id}/status`) you may also see
 `PENDING` (not started yet — same idea as QUEUED) and `PROGRESS` (running and
 reporting how far along it is).
 
@@ -118,8 +122,9 @@ newer information.
 |---|---|
 | **API** | Application Programming Interface — here, the set of web addresses (endpoints) you call to use the system. |
 | **API key** | A secret password sent with each request in the `X-API-Key` header to prove you're allowed in. |
-| **Attempt** | One execution of a job by a worker. Normally `attempts = retries + 1`. |
 | **At-least-once delivery** | The queue guarantees a message is delivered *at least* once — maybe more. The system turns this into "runs once" using claims. |
+| **Attempt** | One execution of a job by a worker. Normally `attempts = retries + 1`. |
+| **Audit log** | A record of who changed what (submit, cancel, schedule edits, key changes) and when. See [15.7](15-security-and-tenancy.md#157-the-audit-log). |
 | **Backoff** | Waiting longer between each retry (5 s, 10 s, 20 s…) so a struggling service gets time to recover. |
 | **Broker** | The message queue software — Redis here. |
 | **Celery** | The Python library that runs workers and moves jobs through the broker. |
@@ -128,11 +133,14 @@ newer information.
 | **Container** | A packaged, isolated running program (made with Docker). |
 | **Cron / cron expression** | A compact way to write a calendar schedule, e.g. `0 8 * * 1-5` = "08:00 every weekday". See [chapter 6](06-scheduling.md#63-a-gentle-cron-primer). |
 | **Dashboard** | Flower — a web page that shows workers and tasks live. |
+| **Dead-letter view** | `GET /v1/jobs/failures`: failed jobs grouped by task and error, ready to re-submit in bulk. See [16.4](16-webhooks-and-workflows.md#164-the-failures-view-dead-letter-queue). |
 | **Deferred duplicate** | A second copy of a job that arrived while the first was still running; it waits and re-checks later. |
-| **Endpoint** | One web address of the API, e.g. `POST /tasks/add`. |
+| **Endpoint** | One web address of the API, e.g. `POST /v1/tasks/add`. |
 | **Envelope (error envelope)** | The fixed shape of every error response: `{"error": {"status_code", "type", "message", "details"}}`. |
-| **FIFO** | First In, First Out — jobs are started in the order they arrived. |
+| **Event stream (SSE)** | `GET /v1/jobs/{id}/events`: a connection that stays open and receives each state change as it happens (server-sent events). |
+| **Fan-out / fan-in** | In a workflow: several steps starting at once (fan-out), and one step that waits for several others (fan-in). |
 | **Fencing token** | The attempt number used to reject updates from outdated workers. |
+| **FIFO** | First In, First Out — jobs are started in the order they arrived. |
 | **Final / terminal status** | SUCCESS, FAILURE or REVOKED. Never changes, never re-runs. |
 | **Flower** | The monitoring dashboard. |
 | **Grace period** | Extra waiting time before the system assumes something is dead. |
@@ -145,29 +153,39 @@ newer information.
 | **Kubernetes (k8s)** | A platform that runs and supervises many containers across many servers. |
 | **Lease** | A time-limited claim on a job, renewed while the worker is alive. |
 | **Liveness / readiness** | Two kinds of health check: "should this be restarted?" vs. "should this receive traffic?" |
+| **Managed key** | An API key created through `/v1/admin/api-keys`, with its own scopes, tenant, allowed tasks and rate limit. |
+| **Metrics** | Numbers about the system (jobs per status, wait times…) served at `/metrics` for Prometheus. See [chapter 17](17-observability.md). |
 | **Migration** | A change to the database structure (adding a table or column). Applied by `python -m app.migrate`. |
 | **Optimistic lock** | A way to update a row only if it hasn't changed since you read it (checked via a `version` number). Used so only one scheduler fires each due run. |
 | **Outbox** | "Write first, send second" — jobs are stored before being queued, and unsent ones are re-sent. |
 | **Pod** | Kubernetes' name for one running copy of a program. |
 | **Postgres / PostgreSQL** | The production database. |
+| **Priority** | `high`, `normal` or `low`. Workers take higher-priority jobs from the queue first. |
 | **Publish** | Put a job's message onto the queue. |
 | **Queue** | A line of waiting jobs. This project has two: `default` and `long`. |
+| **Rate limit** | The most requests a key may make per minute; extra requests get `429`. |
 | **Redis** | The fast in-memory software used as the queue. |
 | **Replica** | One of several identical running copies. |
 | **Result backend** | Where Celery stores live task results and progress (in the database here). |
 | **Retention** | How long old job records are kept (30 days by default). |
-| **Retry** | Running a failed job again — automatically (by the task) or manually (`POST /jobs/{id}/retry`). |
+| **Retry** | Running a failed job again — automatically (by the task) or manually (`POST /v1/jobs/{id}/retry`). |
 | **REVOKED** | The status of a cancelled job. |
 | **Schedule** | A rule for running a task in the future: `once`, `interval` or `cron`. |
 | **Scheduler** | The service that fires schedules, re-sends unsent jobs, and recovers jobs whose worker died. |
+| **Scope** | A permission held by an API key, e.g. `jobs:read` or `schedules:write`. |
 | **SQLite** | A database stored in a single file — used for local development and tests. |
 | **Swagger UI** | The interactive API docs page at `/docs`. |
 | **System schedule** | A schedule defined in the code (heartbeat, nightly cleanup). Visible in the API but read-only. |
 | **Task** | A kind of work the system knows how to do (a "recipe"). |
+| **Tenant** | A customer or team name attached to a key; that key sees only its tenant's jobs, schedules and workflows. |
+| **Trace** | A record of one request's journey through the API, database, queue and worker (OpenTelemetry). |
 | **Traceback** | The detailed technical error report showing exactly where in the code something failed. |
 | **UTC** | Coordinated Universal Time — the single time zone used everywhere in this system. |
 | **Visibility timeout** | How long Redis waits before re-delivering a message a worker took but never confirmed. |
+| **WAITING** | Status of a workflow step whose dependencies haven't all succeeded yet. Saved, but not on any queue. |
+| **Webhook** | An HTTP call the service makes to *your* URL (`callback_url`) when a job or workflow finishes. Signed so you can trust it. |
 | **Worker** | A program that runs jobs. |
 | **Worker loss** | A worker dying mid-job (crash, out of memory, machine failure). |
+| **Workflow** | Several jobs submitted together that run in dependency order. See [16.3](16-webhooks-and-workflows.md#163-workflows). |
 
 **Next:** [3. Architecture →](03-architecture.md)

@@ -24,6 +24,20 @@ and render automatically on GitHub, GitLab and in VS Code's Markdown preview.)
 | 16 | [High availability across zones](#16-high-availability-across-zones) | Deployment |
 | 17 | [Incident triage](#17-incident-triage) | Decision tree |
 
+### New in 5.0 (in their chapters)
+
+| Diagram | Type | Where |
+|---|---|---|
+| Who may do what: key → rate limit → scope → tenant | Decision flow | [15.1](15-security-and-tenancy.md#151-the-idea-in-one-picture) |
+| Tenants sharing one database | Flowchart | [15.5](15-security-and-tenancy.md#155-tenants-many-teams-or-customers-one-deployment) |
+| Webhook: recorded with the job, sent once, retried | Flowchart + sequence | [16.2](16-webhooks-and-workflows.md#162-webhooks), [14.15](14-integration-guide.md#1415-webhooks-get-told-when-a-job-finishes) |
+| Workflow fan-out / fan-in, and skipping after a failure | Flowcharts | [16.3](16-webhooks-and-workflows.md#163-workflows) |
+| Life of a workflow step (WAITING → …) | State diagram | [16.3](16-webhooks-and-workflows.md#163-workflows) |
+| Why fan-in is released exactly once | Sequence | [16.3](16-webhooks-and-workflows.md#163-workflows) |
+| Metrics, traces and logs | Flowchart | [17.1](17-observability.md#171-the-three-signals) |
+| One trace from API to worker | Flowchart | [17.4](17-observability.md#174-tracing-opentelemetry) |
+| Life of an API version | Timeline | [18.3](18-api-versioning.md#183-how-a-breaking-change-would-ship) |
+
 ---
 
 ## 1. System context
@@ -87,6 +101,9 @@ Only the API accepts traffic from outside. Workers and schedulers make outgoing 
 ```mermaid
 stateDiagram-v2
     [*] --> QUEUED: submitted
+    [*] --> WAITING: workflow step
+    WAITING --> QUEUED: dependencies succeeded
+    WAITING --> REVOKED: a dependency failed
     QUEUED --> STARTED: worker claims it
     STARTED --> SUCCESS: finished
     STARTED --> RETRY: error, will retry
@@ -110,7 +127,7 @@ sequenceDiagram
     participant D as Postgres
     participant R as Redis
     participant W as Worker
-    C->>A: POST /tasks/add
+    C->>A: POST /v1/tasks/add
     A->>D: INSERT job (QUEUED, unpublished)
     A->>R: publish
     A->>D: published_at = now

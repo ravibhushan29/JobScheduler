@@ -41,6 +41,7 @@ class ErrorType(str, Enum):
     METHOD_NOT_ALLOWED = "method_not_allowed"
     CONFLICT = "conflict"
     VALIDATION_ERROR = "validation_error"
+    RATE_LIMITED = "rate_limited"
     SERVICE_UNAVAILABLE = "service_unavailable"
     INTERNAL_ERROR = "internal_error"
     HTTP_ERROR = "http_error"  # any other status code
@@ -54,6 +55,7 @@ _TYPE_BY_STATUS = {
     405: ErrorType.METHOD_NOT_ALLOWED,
     409: ErrorType.CONFLICT,
     422: ErrorType.VALIDATION_ERROR,
+    429: ErrorType.RATE_LIMITED,
     500: ErrorType.INTERNAL_ERROR,
     503: ErrorType.SERVICE_UNAVAILABLE,
 }
@@ -77,9 +79,11 @@ class ErrorResponse(BaseModel):
 _DESCRIPTIONS = {
     400: "The request is not valid for the resource's current state.",
     401: "Missing or invalid API key.",
+    403: "The API key lacks the required scope, or may not run this task.",
     404: "The requested resource does not exist.",
     409: "The request conflicts with the resource's current state.",
     422: "The request failed schema validation.",
+    429: "Rate limit exceeded; see the Retry-After header.",
     503: "A dependency (task queue or database) is unavailable.",
 }
 

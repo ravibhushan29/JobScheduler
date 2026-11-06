@@ -53,6 +53,14 @@ _DB_UNAVAILABLE = (sa_exc.OperationalError, sa_exc.InterfaceError, sa_exc.Timeou
 DB_UNAVAILABLE_BACKOFF_SECONDS = 2
 
 
+def count_event(name: str) -> None:
+    """Best-effort bump of a cluster-wide event counter (see /metrics); never raises."""
+    try:
+        db.run_sync(db.increment_counter(name))
+    except Exception:
+        logger.debug("Could not count event %s", name, exc_info=True)
+
+
 class _LeaseKeeper:
     """Renews a running attempt's lease every lease/3 seconds until stopped."""
 
@@ -79,6 +87,7 @@ class _LeaseKeeper:
                 logger.warning("Could not renew lease for task_id=%s", self._task_id, exc_info=True)
                 continue
             if not renewed:
+                count_event("lease_lost")
                 logger.error(
                     "[LEASE LOST] task_id=%s attempt=%s: another worker took over this job",
                     self._task_id,
@@ -119,12 +128,16 @@ class GuardedTask(Task):
 
         if claim.acquired:
             request.execution_attempt = claim.attempt  # read by the signal handlers
+            request.job_max_retries = claim.max_retries  # per-job override, read by retry()
             with _LeaseKeeper(request.id, claim.attempt):
                 return self.run(*args, **kwargs)
 
         if claim.status in db.TERMINAL_STATES:
             logger.warning("[DUPLICATE DROPPED] task=%s id=%s status=%s", self.name, request.id, claim.status)
+            count_event("duplicate_dropped")
             raise Ignore()
+
+        count_event("duplicate_deferred")
 
         delay = self._seconds_until(claim.lease_expires_at)
         logger.warning(
@@ -132,6 +145,12 @@ class GuardedTask(Task):
         )
         self.signature_from_request(request, args, kwargs, countdown=delay).apply_async()
         raise Ignore()
+
+    def retry(self, *args, max_retries=None, **kwargs):
+        """Celery's retry, honouring a per-job `max_retries` given at submission."""
+        if max_retries is None:
+            max_retries = getattr(self.request, "job_max_retries", None)
+        return super().retry(*args, max_retries=max_retries, **kwargs)
 
     @staticmethod
     def _seconds_until(lease_expires_at: datetime | None) -> int:

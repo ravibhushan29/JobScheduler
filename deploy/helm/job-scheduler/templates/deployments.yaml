@@ -1,0 +1,7 @@
+{{- /* api, worker, worker-long, scheduler, flower: see "job-scheduler.deployment" in _helpers.tpl. */}}
+{{- range (include "job-scheduler.components" . | fromYamlArray) }}
+{{- if (index $.Values .key).enabled }}
+---
+{{ include "job-scheduler.deployment" (dict "root" $ "key" .key "name" .name "migrate" .migrate) }}
+{{- end }}
+{{- end }}

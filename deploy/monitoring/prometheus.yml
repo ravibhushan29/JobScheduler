@@ -1,0 +1,17 @@
+# Prometheus config for docker-compose.monitoring.yml.
+# Every API replica serves the same cluster-wide jobscheduler_* values (read from
+# the database), so dashboards and alerts use max() across instances.
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - /etc/prometheus/alerts.yml
+
+scrape_configs:
+  - job_name: job-scheduler-api
+    metrics_path: /metrics
+    dns_sd_configs: # one target per API replica (Docker's DNS returns every container)
+      - names: [api]
+        type: A
+        port: 8000

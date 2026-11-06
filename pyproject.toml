@@ -1,6 +1,6 @@
 [project]
 name = "job-scheduler"
-version = "4.0.0"
+version = "5.0.0"
 description = "Highly available FastAPI + Celery + Redis + Postgres job scheduler where every job and scheduled run executes exactly once."
 requires-python = ">=3.11"
 license = "MIT"

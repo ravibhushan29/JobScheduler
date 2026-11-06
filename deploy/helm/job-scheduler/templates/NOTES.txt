@@ -1,0 +1,52 @@
+{{- $fullname := include "job-scheduler.fullname" . -}}
+{{- $ns := .Release.Namespace -}}
+Job scheduler {{ .Chart.AppVersion }} is installed as release "{{ .Release.Name }}" in namespace "{{ $ns }}".
+
+Image: {{ include "job-scheduler.image" . }}
+Secret: {{ include "job-scheduler.secretName" . }}{{ if .Values.secrets.existingSecret }} (existing, not managed by this chart){{ else }} (created by this chart){{ end }}
+
+Watch the pods start (each runs the "migrate" init container first):
+
+  kubectl -n {{ $ns }} get pods -l app.kubernetes.io/instance={{ .Release.Name }} -w
+
+{{- if .Values.api.enabled }}
+
+Reach the API:
+{{- if .Values.ingress.enabled }}
+
+  http{{ if .Values.ingress.tls.enabled }}s{{ end }}://{{ .Values.ingress.host }}{{ .Values.ingress.path }}
+{{- else }}
+
+  kubectl -n {{ $ns }} port-forward svc/{{ $fullname }}-api 8000:{{ .Values.api.service.port }}
+  curl http://localhost:8000/health
+{{- end }}
+{{- end }}
+
+{{- if .Values.flower.enabled }}
+
+Flower (internal only):
+
+  kubectl -n {{ $ns }} port-forward svc/{{ $fullname }}-flower 5555:{{ .Values.flower.service.port }}
+{{- end }}
+
+{{- if not .Values.secrets.existingSecret }}
+{{- $s := .Values.secrets.values }}
+{{- $missing := list }}
+{{- if not $s.DATABASE_URL }}{{ $missing = append $missing "DATABASE_URL" }}{{ end }}
+{{- if not $s.API_KEYS }}{{ $missing = append $missing "API_KEYS" }}{{ end }}
+{{- if and (not $s.CELERY_BROKER_URL) (not $s.REDIS_PASSWORD) }}{{ $missing = append $missing "CELERY_BROKER_URL (or REDIS_PASSWORD + config.REDIS_HOST)" }}{{ end }}
+{{- if and .Values.flower.enabled (not $s.FLOWER_BASIC_AUTH) }}{{ $missing = append $missing "FLOWER_BASIC_AUTH" }}{{ end }}
+{{- if $missing }}
+
+WARNING: these secret values are empty, so the pods will not work yet:
+{{- range $missing }}
+  - {{ . }}
+{{- end }}
+Set them with secrets.values.*, or better, create a Secret yourself and set
+secrets.existingSecret. See the chart README.
+{{- end }}
+{{- end }}
+
+Pod Security: label the namespace for the restricted level if not done yet:
+
+  kubectl label namespace {{ $ns }} pod-security.kubernetes.io/enforce=restricted

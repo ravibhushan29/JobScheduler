@@ -1,0 +1,40 @@
+{{- if and .Values.metrics.serviceMonitor.enabled .Values.api.enabled }}
+{{- $ctx := dict "root" . "name" "api" }}
+{{- $sm := .Values.metrics.serviceMonitor }}
+# Needs the Prometheus Operator CRDs. Scrapes the api Service.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "job-scheduler.componentName" $ctx }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "job-scheduler.componentLabels" $ctx | nindent 4 }}
+    {{- with $sm.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- include "job-scheduler.commonAnnotations" . }}
+spec:
+  namespaceSelector:
+    matchNames:
+      - {{ .Release.Namespace }}
+  selector:
+    matchLabels:
+      {{- include "job-scheduler.componentSelectorLabels" $ctx | nindent 6 }}
+  endpoints:
+    - port: http
+      path: {{ $sm.path }}
+      {{- with $sm.interval }}
+      interval: {{ . }}
+      {{- end }}
+      {{- with $sm.scrapeTimeout }}
+      scrapeTimeout: {{ . }}
+      {{- end }}
+      {{- with $sm.relabelings }}
+      relabelings:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $sm.metricRelabelings }}
+      metricRelabelings:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

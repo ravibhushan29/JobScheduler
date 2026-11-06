@@ -31,3 +31,20 @@ croniter==6.2.2
 
 # Monitoring dashboard for Celery — https://github.com/mher/flower
 flower==2.0.1
+
+# --- 5.0 ---
+# IANA time-zone data for cron schedules with a `timezone` (slim images may lack /usr/share/zoneinfo).
+tzdata==2026.6
+# Webhook delivery (async HTTP client).
+httpx==0.28.1
+# GET /metrics (Prometheus text format).
+prometheus-client==0.26.0
+# OpenTelemetry tracing (used only when TRACING_ENABLED / OTEL_EXPORTER_OTLP_ENDPOINT is set).
+# The instrumentation packages are versioned 0.Xb0 and must match the SDK's 1.X release line.
+opentelemetry-api==1.45.2
+opentelemetry-sdk==1.45.2
+opentelemetry-exporter-otlp-proto-http==1.45.2
+opentelemetry-instrumentation-fastapi==0.66b2
+opentelemetry-instrumentation-celery==0.66b2
+opentelemetry-instrumentation-sqlalchemy==0.66b2
+opentelemetry-instrumentation-httpx==0.66b2

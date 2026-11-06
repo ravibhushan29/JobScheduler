@@ -67,3 +67,8 @@ htmlcov/
 # ---------------------------------------------------------------------------
 .DS_Store
 Thumbs.db
+
+# SDK build output
+sdk/typescript/node_modules/
+sdk/typescript/dist/
+backups/

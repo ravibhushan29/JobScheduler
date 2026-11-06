@@ -1,0 +1,26 @@
+{{- range (include "job-scheduler.components" . | fromYamlArray) }}
+{{- $c := index $.Values .key }}
+{{- if and $c.enabled $c.pdb.enabled }}
+{{- $ctx := dict "root" $ "name" .name }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "job-scheduler.componentName" $ctx }}
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "job-scheduler.componentLabels" $ctx | nindent 4 }}
+  {{- include "job-scheduler.commonAnnotations" $ }}
+spec:
+  {{- if hasKey $c.pdb "minAvailable" }}
+  minAvailable: {{ $c.pdb.minAvailable }}
+  {{- else if hasKey $c.pdb "maxUnavailable" }}
+  maxUnavailable: {{ $c.pdb.maxUnavailable }}
+  {{- else }}
+  {{- fail (printf "%s.pdb: set minAvailable or maxUnavailable" .key) }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "job-scheduler.componentSelectorLabels" $ctx | nindent 6 }}
+{{- end }}
+{{- end }}
