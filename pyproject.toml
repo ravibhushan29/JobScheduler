@@ -3,6 +3,8 @@ name = "job-scheduler"
 version = "3.1.0"
 description = "FastAPI + Celery + Celery Beat + Redis job scheduler with SQLite-backed job history and runtime schedules."
 requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
 
 [tool.ruff]
 line-length = 120

@@ -314,3 +314,9 @@ Afterwards it checks every job in the database for extra runs, gaps, stuck jobs 
 - **New periodic job:** add an entry to `SYSTEM_SCHEDULES` in `app/tasks.py`. Every scheduler replica seeds it on startup, and it fires once per due time.
 - **New runtime schedule:** `POST /schedules`; no code change needed.
 - **New column:** add it to the table in `app/db.py`. Migrations add missing columns and indexes on the next start.
+
+---
+
+## License
+
+Released under the [MIT License](LICENSE). Copyright (c) 2026 Ravi Bhushan.
