@@ -15,6 +15,7 @@ no work.
 - [Deploying to Kubernetes](#deploying-to-kubernetes) · [High availability](#high-availability)
 - [API overview](#api-overview) · [Configuration](#configuration) · [Testing](#testing)
 - [Operations](#operations) · [Extending](#extending)
+- 📚 **Full documentation, written for everyone (with 50 diagrams): [docs/](docs/README.md)**
 - Manual walkthrough of every endpoint: [USER_TESTING.md](USER_TESTING.md) · Changes: [CHANGELOG.md](CHANGELOG.md)
 
 ---
