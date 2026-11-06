@@ -1,0 +1,79 @@
+# Continuous integration: lint, test (SQLite and Postgres), build the image.
+# Runs on every push to main and on every pull request.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A newer push to the same branch cancels the older, still-running build.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Lint (ruff)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+      - run: pip install ruff==0.17.3
+      - run: ruff check .
+      - run: ruff format --check .
+
+  test:
+    name: Tests (Python ${{ matrix.python }}, ${{ matrix.database }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { python: "3.11", database: sqlite }
+          - { python: "3.12", database: sqlite }
+          - { python: "3.12", database: postgres }
+    # Postgres is started for every matrix entry but only used by the postgres one.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: jobs
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+      - run: pip install -r requirements-dev.txt
+      - name: Run tests
+        env:
+          # Empty = the tests use a throwaway SQLite file (see tests/conftest.py).
+          TEST_DATABASE_URL: ${{ matrix.database == 'postgres' && 'postgresql://postgres:test@localhost:5432/jobs' || '' }}
+        run: pytest -q
+
+  docker:
+    name: Docker image builds
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build --tag job-scheduler:ci .
+      - name: Image starts and imports the app
+        run: docker run --rm job-scheduler:ci python -c "import app.main, app.scheduler, app.tasks; print('ok')"

@@ -20,3 +20,7 @@ ignore = ["B008"]
 testpaths = ["tests"]
 pythonpath = ["."]
 addopts = "-ra"
+
+[tool.ruff.format]
+# Code blocks in docs/*.md are hand-aligned examples, not source files.
+exclude = ["*.md"]

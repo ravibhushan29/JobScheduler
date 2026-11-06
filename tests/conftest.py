@@ -57,7 +57,9 @@ def clean_db():
         async with db.engine().begin() as conn:
             for table in reversed(db.metadata.sorted_tables):
                 await conn.execute(table.delete())
-            if settings.IS_POSTGRES:  # Celery's result tables share the database there
+            # On Postgres, Celery's result table shares the database. Celery creates it
+            # lazily on first use, so it doesn't exist yet on a fresh database.
+            if settings.IS_POSTGRES and await conn.scalar(text("SELECT to_regclass('celery_taskmeta')")):
                 await conn.execute(text("DELETE FROM celery_taskmeta WHERE true"))
 
     run(reset())

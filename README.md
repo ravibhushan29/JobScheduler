@@ -1,5 +1,7 @@
 # Job Scheduler & Queue
 
+[![CI](https://github.com/ravibhushan29/JobScheduler/actions/workflows/ci.yml/badge.svg)](https://github.com/ravibhushan29/JobScheduler/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 A highly available background-job service: **FastAPI** to submit and inspect
 jobs, **Celery** workers to run them, an **active-active scheduler** for
 one-off, interval and cron schedules, **Redis** as the queue, **Postgres** as
