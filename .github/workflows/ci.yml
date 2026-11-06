@@ -82,7 +82,7 @@ jobs:
       - run: pip install -r requirements.txt
       - name: sdk/openapi.json matches the API
         run: python scripts/export_openapi.py --check
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
           cache: npm
