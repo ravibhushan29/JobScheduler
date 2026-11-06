@@ -3,7 +3,7 @@
 # or `pip list --outdated`, and read each project's changelog for breaking changes
 # (celery in particular ships major/minor releases with config changes).
 
-fastapi==0.140.0
+fastapi==0.162.0
 uvicorn[standard]==0.51.0
 celery==5.6.3
 # NOTE: redis-py ships major versions faster than Celery's Redis transport
