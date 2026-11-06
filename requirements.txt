@@ -30,7 +30,7 @@ aiosqlite==0.22.1
 croniter==6.2.2
 
 # Monitoring dashboard for Celery — https://github.com/mher/flower
-flower==2.0.1
+flower==2.2.0
 
 # --- 5.0 ---
 # IANA time-zone data for cron schedules with a `timezone` (slim images may lack /usr/share/zoneinfo).
