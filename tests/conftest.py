@@ -22,7 +22,7 @@ import time
 _TMP = tempfile.mkdtemp(prefix="jobscheduler-tests-")
 os.environ.update(
     {
-        "DATABASE_URL": os.getenv("TEST_DATABASE_URL", f"sqlite:///{_TMP}/scheduler.db"),
+        "DATABASE_URL": os.getenv("TEST_DATABASE_URL") or f"sqlite:///{_TMP}/scheduler.db",
         "DB_PATH": os.path.join(_TMP, "scheduler.db"),
         "CELERY_BROKER_URL": "memory://",
         "CELERY_RESULTS_DB_PATH": os.path.join(_TMP, "celery_results.db"),
