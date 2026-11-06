@@ -15,7 +15,7 @@ redis==8.0.1
 # dependency. Without this pin a clean image fails at worker start with
 # "No module named 'packaging'" (a dev venv usually has it by accident).
 packaging==26.2
-pydantic[email]==2.13.4
+pydantic[email]==2.14.2
 
 # Database access (app/db.py and Celery's result backend), via SQLAlchemy Core.
 # The asyncio extra pulls in greenlet, which SQLAlchemy's async engine needs.
