@@ -14,7 +14,7 @@ redis==8.0.1
 # kombu's Redis transport imports `packaging` but doesn't declare it as a
 # dependency. Without this pin a clean image fails at worker start with
 # "No module named 'packaging'" (a dev venv usually has it by accident).
-packaging==26.2
+packaging==26.3
 pydantic[email]==2.13.4
 
 # Database access (app/db.py and Celery's result backend), via SQLAlchemy Core.
