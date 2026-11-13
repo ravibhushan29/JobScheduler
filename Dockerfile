@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 # One image for every service; docker-compose.yml sets each service's command
 # and health check.
-FROM python:3.12-slim
+FROM python:3.15-slim
 
 # No .pyc files; unbuffered stdout so logs appear immediately.
 ENV PYTHONDONTWRITEBYTECODE=1 \
