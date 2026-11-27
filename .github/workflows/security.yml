@@ -51,7 +51,7 @@ jobs:
       # Runs even if the scan failed, so the SBOM is always available.
       - name: Generate SBOM (SPDX JSON)
         if: ${{ !cancelled() }}
-        uses: anchore/sbom-action@v0.24.3
+        uses: anchore/sbom-action@v0.24.4
         with:
           image: job-scheduler:scan
           format: spdx-json
